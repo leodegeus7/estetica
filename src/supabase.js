@@ -8,6 +8,3 @@ if (!supabaseUrl || !supabaseKey) {
 }
 
 export const supabase = createClient(supabaseUrl, supabaseKey)
-
-VITE_SUPABASE_URL=https://gpvgbwfighhcbvdzibkp.supabase.co
-VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imdwdmdid2ZpZ2hoY2J2ZHppYmtwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIzODU1ODEsImV4cCI6MjA4Nzk2MTU4MX0.eSsCF6XnIIJGJvGZhLL0oCRjDw0CUEy1MvUK7wZoOEA
