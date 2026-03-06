@@ -1,123 +1,122 @@
--- ============================================================
--- SCHEMA — Dr. Murilo do Valle Estética
--- Cole este script no SQL Editor do Supabase e execute tudo
--- ============================================================
+-- ═══════════════════════════════════════════════════════════════════════════
+-- SCHEMA - Dr. Murilo do Valle Estética
+-- Execute no Supabase SQL Editor antes do primeiro deploy
+-- ═══════════════════════════════════════════════════════════════════════════
 
--- Pacientes
-create table patients (
-  id uuid primary key default gen_random_uuid(),
-  name text not null,
-  phone text,
-  email text,
+-- Locais de atendimento
+CREATE TABLE IF NOT EXISTS locations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  is_default boolean DEFAULT false
+);
+
+CREATE TABLE IF NOT EXISTS patients (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  phone text DEFAULT '',
+  email text DEFAULT '',
   birthdate date,
-  notes text,
-  status text default 'ok',
-  created_at timestamptz default now()
+  notes text DEFAULT '',
+  status text DEFAULT 'ok'
 );
 
--- Produtos
-create table products (
-  id uuid primary key default gen_random_uuid(),
-  name text not null,
-  unit text not null,
-  total_qty numeric default 0,
-  avg_cost numeric default 0,
-  min_stock numeric default 0,
-  created_at timestamptz default now()
+CREATE TABLE IF NOT EXISTS products (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  unit text DEFAULT 'un',
+  total_qty numeric DEFAULT 0,
+  avg_cost numeric DEFAULT 0,
+  min_stock numeric DEFAULT 0
 );
 
--- Entradas de estoque (histórico de compras)
-create table stock_entries (
-  id uuid primary key default gen_random_uuid(),
-  product_id uuid references products(id),
-  qty numeric not null,
-  total_cost numeric not null,
-  cost_per_unit numeric not null,
-  supplier text,
-  date date not null,
-  created_at timestamptz default now()
+CREATE TABLE IF NOT EXISTS stock_entries (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  product_id uuid REFERENCES products(id),
+  qty numeric NOT NULL,
+  total_cost numeric NOT NULL,
+  cost_per_unit numeric NOT NULL,
+  supplier text DEFAULT '',
+  date date NOT NULL
 );
 
--- Procedimentos
-create table services (
-  id uuid primary key default gen_random_uuid(),
-  name text not null,
-  price numeric not null,
-  duration integer,
-  active boolean default true,
-  needs_return boolean default false,
-  return_type text,
-  return_days integer default 0,
-  return_note text,
-  created_at timestamptz default now()
+CREATE TABLE IF NOT EXISTS services (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  price numeric DEFAULT 0,
+  duration integer DEFAULT 60,
+  active boolean DEFAULT true,
+  needs_return boolean DEFAULT false,
+  return_type text DEFAULT '',
+  return_days integer DEFAULT 0,
+  return_note text DEFAULT ''
 );
 
--- Custos operacionais
-create table costs (
-  id uuid primary key default gen_random_uuid(),
-  name text not null,
-  type text not null,
-  amount numeric not null,
-  frequency text not null,
-  date date not null,
-  created_at timestamptz default now()
+CREATE TABLE IF NOT EXISTS costs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  type text DEFAULT 'variable',
+  amount numeric NOT NULL,
+  frequency text DEFAULT 'monthly',
+  date date NOT NULL
 );
 
--- Agendamentos
-create table appointments (
-  id uuid primary key default gen_random_uuid(),
-  patient_id uuid references patients(id),
-  service_id uuid references services(id),
-  date date not null,
-  time text not null,
-  status text default 'scheduled',
+CREATE TABLE IF NOT EXISTS appointments (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  patient_id uuid REFERENCES patients(id),
+  service_id uuid REFERENCES services(id),
+  date date NOT NULL,
+  time time NOT NULL,
+  status text DEFAULT 'scheduled',
   sale_id uuid,
-  created_at timestamptz default now()
+  location text DEFAULT 'Clínica'
 );
 
--- Vendas
-create table sales (
-  id uuid primary key default gen_random_uuid(),
-  patient_id uuid references patients(id),
-  service_id uuid references services(id),
-  appointment_id uuid references appointments(id),
-  professional text,
-  date date not null,
-  price numeric not null,
-  payment_method text not null,
-  installments integer default 1,
-  paid_installments integer default 1,
-  credit_fee_rate numeric default 0,
-  created_at timestamptz default now()
+CREATE TABLE IF NOT EXISTS sales (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  patient_id uuid REFERENCES patients(id),
+  service_id uuid REFERENCES services(id),
+  appointment_id uuid,
+  professional text DEFAULT '',
+  date date NOT NULL,
+  price numeric NOT NULL,
+  payment_method text NOT NULL,
+  card_brand text DEFAULT '',
+  installments integer DEFAULT 1,
+  paid_installments integer DEFAULT 1,
+  credit_fee_rate numeric DEFAULT 0,
+  net_amount numeric DEFAULT 0,
+  location_id uuid REFERENCES locations(id),
+  down_payment_amount numeric DEFAULT 0,
+  down_payment_method text DEFAULT '',
+  notes text DEFAULT ''
 );
 
--- Produtos consumidos por venda
-create table sale_products (
-  id uuid primary key default gen_random_uuid(),
-  sale_id uuid references sales(id) on delete cascade,
-  product_id uuid references products(id),
-  qty numeric not null,
-  cost_at_sale numeric not null,
-  session_type text
+CREATE TABLE IF NOT EXISTS sale_products (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  sale_id uuid REFERENCES sales(id) ON DELETE CASCADE,
+  product_id uuid REFERENCES products(id),
+  qty numeric DEFAULT 0,
+  cost_at_sale numeric DEFAULT 0,
+  session_type text DEFAULT 'initial'
 );
 
--- ── RLS (Row Level Security) ─────────────────────────────────
--- Habilita RLS em todas as tabelas
-alter table patients         enable row level security;
-alter table products         enable row level security;
-alter table stock_entries    enable row level security;
-alter table services         enable row level security;
-alter table costs            enable row level security;
-alter table appointments     enable row level security;
-alter table sales            enable row level security;
-alter table sale_products    enable row level security;
+-- ── RLS ──────────────────────────────────────────────────────────────────────
+ALTER TABLE locations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE patients ENABLE ROW LEVEL SECURITY;
+ALTER TABLE products ENABLE ROW LEVEL SECURITY;
+ALTER TABLE stock_entries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE services ENABLE ROW LEVEL SECURITY;
+ALTER TABLE costs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE appointments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sales ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sale_products ENABLE ROW LEVEL SECURITY;
 
--- Políticas: apenas usuários autenticados têm acesso total
-create policy "auth_only" on patients         for all using (auth.role() = 'authenticated');
-create policy "auth_only" on products         for all using (auth.role() = 'authenticated');
-create policy "auth_only" on stock_entries    for all using (auth.role() = 'authenticated');
-create policy "auth_only" on services         for all using (auth.role() = 'authenticated');
-create policy "auth_only" on costs            for all using (auth.role() = 'authenticated');
-create policy "auth_only" on appointments     for all using (auth.role() = 'authenticated');
-create policy "auth_only" on sales            for all using (auth.role() = 'authenticated');
-create policy "auth_only" on sale_products    for all using (auth.role() = 'authenticated');
+CREATE POLICY "auth users" ON locations FOR ALL USING (auth.role() = 'authenticated');
+CREATE POLICY "auth users" ON patients FOR ALL USING (auth.role() = 'authenticated');
+CREATE POLICY "auth users" ON products FOR ALL USING (auth.role() = 'authenticated');
+CREATE POLICY "auth users" ON stock_entries FOR ALL USING (auth.role() = 'authenticated');
+CREATE POLICY "auth users" ON services FOR ALL USING (auth.role() = 'authenticated');
+CREATE POLICY "auth users" ON costs FOR ALL USING (auth.role() = 'authenticated');
+CREATE POLICY "auth users" ON appointments FOR ALL USING (auth.role() = 'authenticated');
+CREATE POLICY "auth users" ON sales FOR ALL USING (auth.role() = 'authenticated');
+CREATE POLICY "auth users" ON sale_products FOR ALL USING (auth.role() = 'authenticated');
