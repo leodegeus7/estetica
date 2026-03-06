@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import * as db from "./db";
 import { supabase } from "./supabase";
+import { subscribeToPush } from "./usePushNotifications";
 
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
 const USERS = [
@@ -375,7 +376,10 @@ function LoginScreen({ onLogin }) {
     const { data, error: err } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
     setLoading(false);
     if (err) setError("E-mail ou senha incorretos.");
-    else onLogin(data.user);
+    else {
+      onLogin(data.user);
+      if (data.user.email === "murillodovalle@gmail.com") subscribeToPush(1);
+    }
   }
 
   return (
@@ -730,14 +734,14 @@ function DashboardPage({ ctx }) {
           <div className="section-header"><div className="section-title">💳 Últimas Vendas</div></div>
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Paciente</th><th>Procedimento</th><th>Valor</th><th>Lucro</th></tr></thead>
+              <thead><tr><th>Data</th><th>Paciente</th><th>Procedimento</th><th>Valor</th><th>Lucro</th></tr></thead>
               <tbody>
-                {sales.slice(-5).reverse().map((s) => {
+                {sales.slice(0, 5).map((s) => {
                   const p = patients.find((x) => x.id === s.patientId);
                   const sv = services.find((x) => x.id === s.serviceId);
                   const net = calcNetValue(s);
                   return (
-                    <tr key={s.id}><td>{p?.name}</td><td>{sv?.name}</td><td>{fmt(s.price)}</td>
+                    <tr key={s.id}><td style={{ whiteSpace: "nowrap" }}>{fmtDate(s.date)}</td><td>{p?.name}</td><td>{sv?.name}</td><td>{fmt(s.price)}</td>
                       <td style={{ color: net >= 0 ? T.success : T.danger, fontWeight: 600 }}>{fmt(net)}</td></tr>
                   );
                 })}
@@ -1022,7 +1026,7 @@ function SalesPage({ ctx }) {
             </thead>
             <tbody>
               {filtered.length === 0 && <tr><td colSpan={10}><div className="empty">Nenhuma venda encontrada</div></td></tr>}
-              {filtered.slice().reverse().map((s) => {
+              {filtered.map((s) => {
                 const p = patients.find((x) => x.id === s.patientId);
                 const sv = services.find((x) => x.id === s.serviceId);
                 const cost = calcSaleCost(s.products);
