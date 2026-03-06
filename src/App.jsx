@@ -452,6 +452,8 @@ function MainApp({ user, onLogout }) {
   const displayName = user?.user_metadata?.name || user?.email?.split("@")[0] || "Usuario";
   const userForCtx = { ...user, name: displayName };
 
+  const [showMore, setShowMore] = useState(false);
+
   const ctx = {
     user: userForCtx, products, setProducts, stockEntries, setStockEntries,
     services, setServices, patients, setPatients, sales, setSales,
@@ -460,13 +462,6 @@ function MainApp({ user, onLogout }) {
     db,
   };
 
-  if (dataLoading) return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: T.bg, flexDirection: "column", gap: 16 }}>
-      <div style={{ fontSize: 32 }}>⏳</div>
-      <div style={{ fontSize: 14, color: T.grey }}>Carregando dados...</div>
-    </div>
-  );
-
   useEffect(() => {
     if (!pendingReturn) return;
     setModal({
@@ -474,6 +469,13 @@ function MainApp({ user, onLogout }) {
       onClose: () => { setModal(null); setPendingReturn(null); },
     });
   }, [pendingReturn]);
+
+  if (dataLoading) return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: T.bg, flexDirection: "column", gap: 16 }}>
+      <div style={{ fontSize: 32 }}>⏳</div>
+      <div style={{ fontSize: 14, color: T.grey }}>Carregando dados...</div>
+    </div>
+  );
 
   const NAV = [
     { id: "dashboard", icon: "🏠", label: "Dashboard" },
@@ -499,7 +501,6 @@ function MainApp({ user, onLogout }) {
     { id: "patients",     icon: "👤", label: "Pacientes" },
   ];
   const MORE_NAV = NAV.filter((n) => !BOTTOM_NAV.find((b) => b.id === n.id));
-  const [showMore, setShowMore] = useState(false);
 
   function navTo(id) { setPage(id); setShowMore(false); }
 
@@ -1876,13 +1877,23 @@ function CostForm({ ctx, onClose }) {
 
 // ─── MONTHLY CHART ────────────────────────────────────────────────────────────
 function MonthlyChart({ sales, costs }) {
-  // Build last 12 months of data
-  const months = [];
   const now = new Date();
-  for (let i = 11; i >= 0; i--) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    const key = d.toISOString().slice(0, 7);
-    const label = d.toLocaleDateString("pt-BR", { month: "short", year: "2-digit" });
+  const defaultFrom = new Date(now.getFullYear(), now.getMonth() - 5, 1).toISOString().slice(0, 7);
+  const defaultTo = now.toISOString().slice(0, 7);
+
+  const [fromMonth, setFromMonth] = useState(defaultFrom);
+  const [toMonth, setToMonth] = useState(defaultTo);
+  const [hovered, setHovered] = useState(null);
+  const [visibleLines, setVisibleLines] = useState({ revenue: true, netProfit: true, opCosts: true, clients: true });
+
+  // Build months in selected range
+  const months = [];
+  const [fy, fm] = fromMonth.split("-").map(Number);
+  const [ty, tm] = toMonth.split("-").map(Number);
+  let cy = fy, cm = fm;
+  while (cy < ty || (cy === ty && cm <= tm)) {
+    const key = `${cy}-${String(cm).padStart(2, "0")}`;
+    const label = new Date(cy, cm - 1, 1).toLocaleDateString("pt-BR", { month: "short", year: "2-digit" });
     const mSales = sales.filter((s) => s.date.startsWith(key));
     const mCosts = costs.filter((c) => c.date.startsWith(key));
     const revenue = mSales.reduce((s, x) => s + x.price, 0);
@@ -1892,20 +1903,14 @@ function MonthlyChart({ sales, costs }) {
     const netProfit = revenue - productCost - fees - opCosts;
     const clients = new Set(mSales.map((s) => s.patientId)).size;
     months.push({ key, label, revenue, netProfit, opCosts: opCosts + productCost + fees, clients });
+    cm++;
+    if (cm > 12) { cm = 1; cy++; }
   }
 
-  // Only show months with data or last 6 if all empty
-  const active = months.filter((m) => m.revenue > 0 || m.opCosts > 0);
-  const display = active.length > 0 ? months.filter((m) => {
-    const idx = months.indexOf(m);
-    return idx >= months.length - 6;
-  }) : months.slice(-6);
+  const display = months;
 
-  const maxVal = Math.max(...display.map((m) => Math.max(m.revenue, Math.abs(m.netProfit), m.opCosts)), 1);
+  const maxVal = Math.max(...display.map((m) => Math.max(m.revenue, Math.abs(m.netProfit), m.opCosts)), 1) * 1.15;
   const maxClients = Math.max(...display.map((m) => m.clients), 1);
-
-  const [hovered, setHovered] = useState(null);
-  const [visibleLines, setVisibleLines] = useState({ revenue: true, netProfit: true, opCosts: true, clients: true });
 
   const W = 100 / display.length;
   const chartH = 180;
@@ -1922,8 +1927,18 @@ function MonthlyChart({ sales, costs }) {
 
   return (
     <div className="card" style={{ marginBottom: 20 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
-        <div className="section-title">📈 Evolução Mensal</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
+        <div>
+          <div className="section-title">📈 Evolução Mensal</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 12, color: T.grey }}>De</span>
+            <input type="month" value={fromMonth} max={toMonth} onChange={(e) => setFromMonth(e.target.value)}
+              style={{ fontSize: 12, padding: "3px 6px", border: `1.5px solid #D5E5EE`, borderRadius: 6, color: T.dark, background: "white", outline: "none" }} />
+            <span style={{ fontSize: 12, color: T.grey }}>até</span>
+            <input type="month" value={toMonth} min={fromMonth} onChange={(e) => setToMonth(e.target.value)}
+              style={{ fontSize: 12, padding: "3px 6px", border: `1.5px solid #D5E5EE`, borderRadius: 6, color: T.dark, background: "white", outline: "none" }} />
+          </div>
+        </div>
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
           {LINES.map((l) => (
             <label key={l.key} style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 12, fontWeight: 500, color: visibleLines[l.key] ? T.dark : T.grey }}>
@@ -1936,8 +1951,8 @@ function MonthlyChart({ sales, costs }) {
       </div>
 
       {/* Chart area */}
-      <div style={{ position: "relative", height: chartH + 50, overflowX: "auto" }}>
-        <div style={{ position: "relative", height: chartH, display: "flex", alignItems: "flex-end", gap: 0, borderBottom: `2px solid ${T.light}`, minWidth: 400 }}>
+      <div style={{ position: "relative", height: chartH + 70, overflowX: "auto" }}>
+        <div style={{ position: "relative", height: chartH, marginTop: 20, display: "flex", alignItems: "flex-end", gap: 0, borderBottom: `2px solid ${T.light}`, minWidth: 400 }}>
           {/* Horizontal grid lines */}
           {[0.25, 0.5, 0.75, 1].map((f) => (
             <div key={f} style={{ position: "absolute", left: 0, right: 0, bottom: chartH * f, borderTop: `1px dashed ${T.light}`, pointerEvents: "none" }}>
@@ -1967,9 +1982,12 @@ function MonthlyChart({ sales, costs }) {
                 )}
               </div>
 
-              {/* Clients dot */}
+              {/* Clients dot + label */}
               {visibleLines.clients && m.clients > 0 && (
-                <div style={{ position: "absolute", bottom: pctC(m.clients) - 4, left: "50%", transform: "translateX(-50%)", width: 8, height: 8, borderRadius: "50%", background: T.warning, border: `2px solid white`, zIndex: 2 }} title={`Clientes: ${m.clients}`} />
+                <>
+                  <div style={{ position: "absolute", bottom: pctC(m.clients) - 4, left: "50%", transform: "translateX(-50%)", width: 8, height: 8, borderRadius: "50%", background: T.warning, border: `2px solid white`, zIndex: 2 }} title={`Clientes: ${m.clients}`} />
+                  <div style={{ position: "absolute", bottom: pctC(m.clients) + 8, left: "50%", transform: "translateX(-50%)", fontSize: 9, color: T.warning, fontWeight: 700, whiteSpace: "nowrap", zIndex: 2 }}>{m.clients}</div>
+                </>
               )}
 
               {/* Tooltip */}
@@ -1994,18 +2012,25 @@ function MonthlyChart({ sales, costs }) {
         </div>
       </div>
 
-      {/* Legend summary row */}
-      <div style={{ display: "flex", gap: 20, marginTop: 12, paddingTop: 12, borderTop: `1px solid ${T.light}`, flexWrap: "wrap" }}>
-        {display.slice(-1).map((m) => (
-          <div key="summary" style={{ display: "flex", gap: 20, flexWrap: "wrap", fontSize: 12 }}>
-            <span style={{ color: T.blue }}>💰 {fmt(m.revenue)}</span>
-            <span style={{ color: m.netProfit >= 0 ? T.success : T.danger }}>✅ {fmt(m.netProfit)}</span>
-            <span style={{ color: T.danger }}>📦 {fmt(m.opCosts)}</span>
-            <span style={{ color: T.warning }}>👤 {m.clients} clientes</span>
+      {/* Averages row */}
+      {(() => {
+        const active = display.filter((m) => m.revenue > 0 || m.opCosts > 0);
+        if (active.length === 0) return null;
+        const n = active.length;
+        const avgRevenue = active.reduce((s, m) => s + m.revenue, 0) / n;
+        const avgProfit  = active.reduce((s, m) => s + m.netProfit, 0) / n;
+        const avgCosts   = active.reduce((s, m) => s + m.opCosts, 0) / n;
+        const avgClients = active.reduce((s, m) => s + m.clients, 0) / n;
+        return (
+          <div style={{ display: "flex", gap: 20, marginTop: 12, paddingTop: 12, borderTop: `1px solid ${T.light}`, flexWrap: "wrap", alignItems: "center" }}>
+            <span style={{ fontSize: 11, color: T.grey, fontWeight: 600 }}>Média / mês:</span>
+            {visibleLines.revenue  && <span style={{ color: T.blue, fontSize: 12 }}>💰 {fmt(avgRevenue)}</span>}
+            {visibleLines.netProfit && <span style={{ color: avgProfit >= 0 ? T.success : T.danger, fontSize: 12 }}>✅ {fmt(avgProfit)}</span>}
+            {visibleLines.opCosts  && <span style={{ color: T.danger, fontSize: 12 }}>📦 {fmt(avgCosts)}</span>}
+            {visibleLines.clients  && <span style={{ color: T.warning, fontSize: 12 }}>👤 {avgClients % 1 === 0 ? avgClients : avgClients.toFixed(1)} clientes</span>}
           </div>
-        ))}
-        <span style={{ color: T.grey, fontSize: 11, marginLeft: "auto" }}>Último mês com dados</span>
-      </div>
+        );
+      })()}
     </div>
   );
 }
