@@ -85,6 +85,14 @@ export async function createStockEntry(e) {
   return { id: data.id, productId: data.product_id, qty: data.qty, totalCost: data.total_cost, costPerUnit: data.cost_per_unit, supplier: data.supplier, date: data.date };
 }
 
+export async function updateStockEntry(e) {
+  const { error } = await supabase.from("stock_entries").update({
+    qty: e.qty, total_cost: e.totalCost,
+    cost_per_unit: e.costPerUnit, supplier: e.supplier, date: e.date,
+  }).eq("id", e.id);
+  if (error) throw error;
+}
+
 // ── services ──────────────────────────────────────────────────────────────────
 export async function fetchServices() {
   const { data, error } = await supabase.from("services").select("*").order("name");

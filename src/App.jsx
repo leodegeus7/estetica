@@ -1980,27 +1980,39 @@ function StockPage({ ctx }) {
   const { products, stockEntries, setModal, setProducts, suppliers, setSuppliers } = ctx;
   const [tab, setTab] = useState("stock");
   const [newSupplierName, setNewSupplierName] = useState("");
+  const [supplierError, setSupplierError] = useState("");
+  const [savingSupplier, setSavingSupplier] = useState(false);
   const [deletingSupId, setDeletingSupId] = useState(null);
 
   function openNew() { setModal({ content: <ProductForm ctx={ctx} onClose={() => setModal(null)} />, onClose: () => setModal(null) }); }
   function openEditProduct(product) { setModal({ content: <ProductForm ctx={ctx} product={product} onClose={() => setModal(null)} />, onClose: () => setModal(null) }); }
   function openEntry(product) { setModal({ content: <StockEntryModal product={product} ctx={ctx} onClose={() => setModal(null)} />, onClose: () => setModal(null) }); }
+  function openEditEntry(entry) {
+    const prod = products.find((p) => p.id === entry.productId);
+    if (!prod) return;
+    setModal({ content: <StockEntryModal product={prod} ctx={ctx} editEntry={entry} onClose={() => setModal(null)} />, onClose: () => setModal(null) });
+  }
 
   async function deleteProduct(p) {
     if (!window.confirm(`Excluir "${p.name}"? Esta ação não pode ser desfeita.`)) return;
     try {
       await db.deleteProduct(p.id);
       setProducts((prev) => prev.filter((x) => x.id !== p.id));
-    } catch (e) { console.error(e); alert("Erro ao excluir produto."); }
+    } catch (e) { console.error(e); }
   }
 
   async function addSupplier() {
     if (!newSupplierName.trim()) return;
+    setSupplierError("");
+    setSavingSupplier(true);
     try {
       const created = await db.createSupplier(newSupplierName.trim());
       setSuppliers((prev) => sortByName([...prev, created]));
       setNewSupplierName("");
-    } catch (e) { alert("Erro ao criar fornecedor (nome duplicado?)."); }
+    } catch (e) {
+      console.error(e);
+      setSupplierError("Erro ao salvar. Verifique se o nome já existe ou se a tabela foi criada no Supabase.");
+    } finally { setSavingSupplier(false); }
   }
 
   async function deleteSupplier(sup) {
@@ -2009,7 +2021,7 @@ function StockPage({ ctx }) {
       setDeletingSupId(sup.id);
       await db.deleteSupplier(sup.id);
       setSuppliers((prev) => prev.filter((x) => x.id !== sup.id));
-    } catch (e) { alert("Erro ao remover fornecedor."); }
+    } catch (e) { console.error(e); }
     finally { setDeletingSupId(null); }
   }
 
@@ -2063,10 +2075,10 @@ function StockPage({ ctx }) {
         <div className="card">
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Data</th><th>Produto</th><th>Qtd Comprada</th><th>Custo Total</th><th>Custo/Unidade</th><th>Fornecedor</th></tr></thead>
+              <thead><tr><th>Data</th><th>Produto</th><th>Qtd Comprada</th><th>Custo Total</th><th>Custo/Unidade</th><th>Fornecedor</th><th></th></tr></thead>
               <tbody>
-                {stockEntries.length === 0 && <tr><td colSpan={6}><div className="empty">Nenhuma compra registrada</div></td></tr>}
-                {stockEntries.slice().reverse().map((e) => {
+                {stockEntries.length === 0 && <tr><td colSpan={7}><div className="empty">Nenhuma compra registrada</div></td></tr>}
+                {stockEntries.slice().sort((a, b) => b.date.localeCompare(a.date)).map((e) => {
                   const prod = products.find((x) => x.id === e.productId);
                   return (
                     <tr key={e.id}>
@@ -2075,6 +2087,7 @@ function StockPage({ ctx }) {
                       <td style={{ color: T.danger }}>{fmt(e.totalCost)}</td>
                       <td style={{ color: T.teal, fontWeight: 600 }}>{fmt(e.costPerUnit)}</td>
                       <td>{e.supplier || "—"}</td>
+                      <td><button className="btn btn-sm btn-secondary" onClick={() => openEditEntry(e)}>✏️</button></td>
                     </tr>
                   );
                 })}
@@ -2087,10 +2100,16 @@ function StockPage({ ctx }) {
       {tab === "suppliers" && (
         <div className="card" style={{ maxWidth: 480 }}>
           <div style={{ fontWeight: 600, marginBottom: 16 }}>Fornecedores</div>
-          <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-            <input className="form-control" placeholder="Nome do fornecedor…" value={newSupplierName} onChange={(e) => setNewSupplierName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addSupplier()} />
-            <button className="btn btn-primary btn-sm" onClick={addSupplier}>+ Adicionar</button>
+          <div style={{ display: "flex", gap: 8, marginBottom: 4 }}>
+            <input className="form-control" placeholder="Nome do fornecedor…" value={newSupplierName}
+              onChange={(e) => { setNewSupplierName(e.target.value); setSupplierError(""); }}
+              onKeyDown={(e) => e.key === "Enter" && addSupplier()} />
+            <button className="btn btn-primary btn-sm" onClick={addSupplier} disabled={savingSupplier}>
+              {savingSupplier ? "…" : "+ Adicionar"}
+            </button>
           </div>
+          {supplierError && <div style={{ color: T.danger, fontSize: 12, marginBottom: 12 }}>{supplierError}</div>}
+          {!supplierError && <div style={{ marginBottom: 12 }} />}
           {suppliers.length === 0 && <div className="empty">Nenhum fornecedor cadastrado</div>}
           <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
             {suppliers.map((sup) => (
@@ -2159,44 +2178,88 @@ function ProductForm({ ctx, product, onClose }) {
   );
 }
 
-function StockEntryModal({ product, ctx, onClose }) {
-  const { setProducts, setStockEntries, suppliers, setSuppliers } = ctx;
-  const [form, setForm] = useState({ qty: "", totalCost: "", supplier: "", date: today() });
+function StockEntryModal({ product, ctx, editEntry, onClose }) {
+  const { setProducts, setStockEntries, setSuppliers } = ctx;
+  // localSuppliers is initialized from ctx.suppliers at mount time and updated
+  // when the user adds a new supplier — avoids the stale-props issue from the
+  // modal JSX being stored in state.
+  const [localSuppliers, setLocalSuppliers] = useState(ctx.suppliers);
+  const editing = !!editEntry;
+  const [form, setForm] = useState(
+    editing
+      ? { qty: String(editEntry.qty), totalCost: String(editEntry.totalCost), supplier: editEntry.supplier || "", date: editEntry.date }
+      : { qty: "", totalCost: "", supplier: "", date: today() }
+  );
   const [newSupplierName, setNewSupplierName] = useState("");
   const [showNewSupplier, setShowNewSupplier] = useState(false);
   const [saving, setSaving] = useState(false);
-  const costPerUnit = form.qty > 0 && form.totalCost > 0 ? (+form.totalCost / +form.qty) : null;
-  const newAvg = costPerUnit !== null ? (product.totalQty * product.avgCost + +form.totalCost) / (product.totalQty + +form.qty) : null;
+  const [supplierErr, setSupplierErr] = useState("");
+
+  // For display calculations
+  const cpu = form.qty > 0 && form.totalCost > 0 ? +form.totalCost / +form.qty : null;
+  let projectedQty = null, projectedAvg = null;
+  if (cpu !== null) {
+    if (editing) {
+      // Reverse the old entry's contribution, then apply new
+      const qtyBase = product.totalQty - editEntry.qty;
+      const avgBase = qtyBase > 0 ? (product.totalQty * product.avgCost - editEntry.totalCost) / qtyBase : 0;
+      projectedQty = qtyBase + +form.qty;
+      projectedAvg = projectedQty > 0 ? (qtyBase * avgBase + +form.totalCost) / projectedQty : 0;
+    } else {
+      projectedQty = product.totalQty + +form.qty;
+      projectedAvg = (product.totalQty * product.avgCost + +form.totalCost) / projectedQty;
+    }
+  }
 
   async function addSupplier() {
     if (!newSupplierName.trim()) return;
+    setSupplierErr("");
     try {
       const created = await db.createSupplier(newSupplierName.trim());
+      // Update both local (for immediate dropdown update) and global ctx
+      setLocalSuppliers((prev) => sortByName([...prev, created]));
       setSuppliers((prev) => sortByName([...prev, created]));
       setForm((f) => ({ ...f, supplier: created.name }));
       setNewSupplierName("");
       setShowNewSupplier(false);
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      console.error(e);
+      setSupplierErr("Erro ao salvar fornecedor.");
+    }
   }
 
   async function save() {
     if (!form.qty || !form.totalCost) return;
     setSaving(true);
     try {
-      const cpu = +form.totalCost / +form.qty;
-      const newQty = product.totalQty + +form.qty;
-      const na = (product.totalQty * product.avgCost + +form.totalCost) / newQty;
-      const created = await db.createStockEntry({ productId: product.id, qty: +form.qty, totalCost: +form.totalCost, costPerUnit: +cpu.toFixed(4), supplier: form.supplier, date: form.date });
-      await db.updateProductStock(product.id, newQty, +na.toFixed(4));
-      setProducts((prev) => prev.map((p) => p.id === product.id ? { ...p, totalQty: newQty, avgCost: +na.toFixed(4) } : p));
-      setStockEntries((prev) => [created, ...prev]);
+      const cpuVal = +form.totalCost / +form.qty;
+      if (editing) {
+        const qtyBase = product.totalQty - editEntry.qty;
+        const avgBase = qtyBase > 0 ? (product.totalQty * product.avgCost - editEntry.totalCost) / qtyBase : 0;
+        const newQty = qtyBase + +form.qty;
+        const newAvg = newQty > 0 ? (qtyBase * avgBase + +form.totalCost) / newQty : 0;
+        await db.updateStockEntry({ ...editEntry, qty: +form.qty, totalCost: +form.totalCost, costPerUnit: +cpuVal.toFixed(4), supplier: form.supplier, date: form.date });
+        await db.updateProductStock(product.id, newQty, +newAvg.toFixed(4));
+        setProducts((prev) => prev.map((p) => p.id === product.id ? { ...p, totalQty: newQty, avgCost: +newAvg.toFixed(4) } : p));
+        setStockEntries((prev) => prev.map((e) => e.id === editEntry.id ? { ...e, qty: +form.qty, totalCost: +form.totalCost, costPerUnit: +cpuVal.toFixed(4), supplier: form.supplier, date: form.date } : e));
+      } else {
+        const newQty = product.totalQty + +form.qty;
+        const newAvg = (product.totalQty * product.avgCost + +form.totalCost) / newQty;
+        const created = await db.createStockEntry({ productId: product.id, qty: +form.qty, totalCost: +form.totalCost, costPerUnit: +cpuVal.toFixed(4), supplier: form.supplier, date: form.date });
+        await db.updateProductStock(product.id, newQty, +newAvg.toFixed(4));
+        setProducts((prev) => prev.map((p) => p.id === product.id ? { ...p, totalQty: newQty, avgCost: +newAvg.toFixed(4) } : p));
+        setStockEntries((prev) => [created, ...prev]);
+      }
       onClose();
     } catch (e) { console.error(e); setSaving(false); }
   }
 
   return (
     <>
-      <div className="modal-header"><div className="modal-title">Registrar Compra — {product.name}</div><button className="btn btn-ghost" onClick={onClose}>✕</button></div>
+      <div className="modal-header">
+        <div className="modal-title">{editing ? "Editar Compra" : "Registrar Compra"} — {product.name}</div>
+        <button className="btn btn-ghost" onClick={onClose}>✕</button>
+      </div>
       <div className="modal-body">
         <div className="alert alert-info" style={{ display: "block" }}>
           Estoque atual: <strong>{product.totalQty} {product.unit}</strong> · Custo médio: <strong>{fmt(product.avgCost)}</strong>
@@ -2208,32 +2271,36 @@ function StockEntryModal({ product, ctx, onClose }) {
         <div className="form-row form-row-2">
           <div className="form-group">
             <label>Fornecedor</label>
-            <select className="form-control" value={form.supplier} onChange={(e) => { if (e.target.value === "__new__") { setShowNewSupplier(true); } else { setForm({ ...form, supplier: e.target.value }); } }}>
+            <select className="form-control" value={form.supplier}
+              onChange={(e) => { if (e.target.value === "__new__") { setShowNewSupplier(true); } else { setForm({ ...form, supplier: e.target.value }); } }}>
               <option value="">— Selecione —</option>
-              {suppliers.map((s) => <option key={s.id} value={s.name}>{s.name}</option>)}
+              {localSuppliers.map((s) => <option key={s.id} value={s.name}>{s.name}</option>)}
               <option value="__new__">+ Novo fornecedor…</option>
             </select>
             {showNewSupplier && (
               <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-                <input className="form-control" value={newSupplierName} onChange={(e) => setNewSupplierName(e.target.value)} placeholder="Nome do fornecedor" style={{ flex: 1 }} onKeyDown={(e) => e.key === "Enter" && addSupplier()} autoFocus />
+                <input className="form-control" value={newSupplierName} onChange={(e) => setNewSupplierName(e.target.value)}
+                  placeholder="Nome do fornecedor" style={{ flex: 1 }}
+                  onKeyDown={(e) => e.key === "Enter" && addSupplier()} autoFocus />
                 <button className="btn btn-primary btn-sm" onClick={addSupplier}>✓</button>
-                <button className="btn btn-ghost btn-sm" onClick={() => { setShowNewSupplier(false); setNewSupplierName(""); }}>✕</button>
+                <button className="btn btn-ghost btn-sm" onClick={() => { setShowNewSupplier(false); setNewSupplierName(""); setSupplierErr(""); }}>✕</button>
               </div>
             )}
+            {supplierErr && <div style={{ color: T.danger, fontSize: 12, marginTop: 4 }}>{supplierErr}</div>}
           </div>
           <div className="form-group"><label>Data</label><input type="date" className="form-control" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></div>
         </div>
-        {costPerUnit !== null && (
+        {cpu !== null && (
           <div className="card" style={{ background: T.light }}>
-            <div className="stat-row"><span className="stat-label">Custo desta compra</span><span>{fmt(costPerUnit)}/{product.unit}</span></div>
-            <div className="stat-row"><span className="stat-label">Novo estoque</span><span>{product.totalQty + +form.qty} {product.unit}</span></div>
-            <div className="stat-row"><span style={{ fontWeight: 700 }}>Novo custo médio</span><span style={{ fontWeight: 700, color: T.teal }}>{fmt(newAvg)}/{product.unit}</span></div>
+            <div className="stat-row"><span className="stat-label">Custo desta compra</span><span>{fmt(cpu)}/{product.unit}</span></div>
+            <div className="stat-row"><span className="stat-label">Novo estoque</span><span>{projectedQty} {product.unit}</span></div>
+            <div className="stat-row"><span style={{ fontWeight: 700 }}>Novo custo médio</span><span style={{ fontWeight: 700, color: T.teal }}>{fmt(projectedAvg)}/{product.unit}</span></div>
           </div>
         )}
       </div>
       <div className="modal-footer">
         <button className="btn btn-secondary" onClick={onClose}>Cancelar</button>
-        <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? "Salvando…" : "Confirmar Compra"}</button>
+        <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? "Salvando…" : editing ? "Salvar Alterações" : "Confirmar Compra"}</button>
       </div>
     </>
   );
