@@ -1102,7 +1102,8 @@ function SalesPage({ ctx }) {
   const filtered = baseList.filter((s) => {
     const p = patients.find((x) => x.id === s.patientId);
     const sv = services.find((x) => x.id === s.serviceId);
-    return (p?.name + sv?.name).toLowerCase().includes(search.toLowerCase());
+    const svcName = s.saleServices?.length > 0 ? s.saleServices.map((i) => i.serviceName).join(" ") : (sv?.name || "");
+    return ((p?.name || "") + svcName).toLowerCase().includes(search.toLowerCase());
   });
 
   function openNew() {
