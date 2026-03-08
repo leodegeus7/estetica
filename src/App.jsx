@@ -427,6 +427,7 @@ function MainApp({ user, onLogout }) {
   const [costs, setCosts] = useState([]);
   const [appointments, setAppointments] = useState([]);
   const [quotations, setQuotations] = useState([]);
+  const [suppliers, setSuppliers] = useState([]);
   const [modal, setModal] = useState(null);
   const [pendingReturn, setPendingReturn] = useState(null);
   const [dataLoading, setDataLoading] = useState(true);
@@ -442,7 +443,8 @@ function MainApp({ user, onLogout }) {
       db.fetchCosts(),
       db.fetchAppointments(),
       db.fetchQuotations(),
-    ]).then(([locs, prods, stock, svcs, pats, sls, cts, appts, quots]) => {
+      db.fetchSuppliers().catch(() => []),
+    ]).then(([locs, prods, stock, svcs, pats, sls, cts, appts, quots, supps]) => {
       setLocations(locs.length > 0 ? locs : INIT_LOCATIONS);
       setProducts(prods);
       setStockEntries(stock);
@@ -452,6 +454,7 @@ function MainApp({ user, onLogout }) {
       setCosts(cts);
       setAppointments(appts);
       setQuotations(quots);
+      setSuppliers(supps || []);
       setDataLoading(false);
     }).catch((err) => {
       console.error("Erro ao carregar dados:", err);
@@ -470,6 +473,7 @@ function MainApp({ user, onLogout }) {
     costs, setCosts, appointments, setAppointments, modal, setModal,
     pendingReturn, setPendingReturn, setPage, locations, setLocations,
     quotations, setQuotations,
+    suppliers, setSuppliers,
     db,
   };
 
@@ -942,9 +946,8 @@ function AppointmentsPage({ ctx }) {
 
 // ─── APPOINTMENT FORM ─────────────────────────────────────────────────────────
 function AppointmentForm({ ctx, onClose, prefill = {} }) {
-  const { services, setAppointments, locations } = ctx;
+  const { services, setAppointments, locations, patients: ctxPatients, setPatients } = ctx;
   const defaultLocation = (locations || []).find((l) => l.name === "Clínica")?.name || (locations?.[0]?.name || "Clínica");
-  const [localPatients, setLocalPatients] = useState(ctx.patients);
   const [form, setForm] = useState({
     patientId: prefill.patientId || "",
     serviceId: prefill.serviceId || "",
@@ -970,14 +973,15 @@ function AppointmentForm({ ctx, onClose, prefill = {} }) {
     setForm((f) => ({ ...f, appointmentType, duration: dur }));
   }
 
-  function saveNewPatient() {
+  async function saveNewPatient() {
     if (!np.name) return;
-    const newP = { id: Date.now(), ...np, status: "ok" };
-    ctx.setPatients((prev) => [...prev, newP]);
-    setLocalPatients((prev) => [...prev, newP]);
-    setForm((f) => ({ ...f, patientId: newP.id }));
-    setShowNew(false);
-    setNp({ name: "", phone: "", email: "", birthdate: "", notes: "" });
+    try {
+      const created = await db.createPatient({ ...np, status: "ok" });
+      setPatients((prev) => sortByName([...prev, created]));
+      setForm((f) => ({ ...f, patientId: created.id }));
+      setShowNew(false);
+      setNp({ name: "", phone: "", email: "", birthdate: "", notes: "" });
+    } catch (e) { console.error("Erro ao criar paciente:", e); }
   }
 
   async function save() {
@@ -1002,7 +1006,7 @@ function AppointmentForm({ ctx, onClose, prefill = {} }) {
     }
   }
 
-  const sortedPatients = sortByName(localPatients);
+  const sortedPatients = sortByName(ctxPatients);
   const sortedServices = sortByName(services.filter((s) => s.active));
 
   return (
@@ -1351,9 +1355,16 @@ function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillL
   const feeAmt = (+form.price || 0) - (+form.netAmount || 0);
   const netValue = (+form.netAmount || 0) - productCost;
 
+  const stockErrors = saleProducts.filter((sp) => {
+    if (!sp.productId || !sp.qty) return false;
+    const prod = products.find((x) => String(x.id) === String(sp.productId));
+    return prod && +sp.qty > prod.totalQty;
+  });
+
   async function save() {
     if (!form.patientId || !form.serviceId || !form.price) return;
     if (sumMismatch) return;
+    if (stockErrors.length > 0) return;
     const validProds = saleProducts.filter((sp) => sp.productId && sp.qty > 0);
     const enriched = validProds.map((sp) => {
       const prod = products.find((x) => x.id === +sp.productId);
@@ -1499,22 +1510,26 @@ function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillL
             <button className="btn btn-sm btn-secondary" onClick={() => setSaleProducts((p) => [...p, { productId: "", qty: "", sessionType: "initial" }])}>+ Produto</button>
           </div>
           {saleProducts.map((sp, i) => {
-            const prod = products.find((x) => x.id === +sp.productId);
+            const prod = products.find((x) => String(x.id) === String(sp.productId));
+            const overStock = prod && sp.qty && +sp.qty > prod.totalQty;
             return (
-              <div key={i} className="product-row">
-                <select className="form-control" value={sp.productId} onChange={(e) => setSaleProducts((p) => p.map((x, idx) => idx === i ? { ...x, productId: e.target.value } : x))} style={{ flex: 2 }}>
-                  <option value="">Selecione produto...</option>
-                  {sortedProducts.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.totalQty} {p.unit})</option>)}
-                </select>
-                <input type="number" className="form-control" placeholder="Qtd" style={{ width: 70 }} value={sp.qty}
-                  onChange={(e) => setSaleProducts((p) => p.map((x, idx) => idx === i ? { ...x, qty: e.target.value } : x))} />
-                <select className="form-control" value={sp.sessionType} onChange={(e) => setSaleProducts((p) => p.map((x, idx) => idx === i ? { ...x, sessionType: e.target.value } : x))} style={{ flex: 1 }}>
-                  <option value="initial">Inicial</option>
-                  <option value="retoque">Retoque</option>
-                  <option value="manutencao">Manutenção</option>
-                  <option value="outro">Outro</option>
-                </select>
-                {saleProducts.length > 1 && <button className="btn btn-sm btn-danger" onClick={() => setSaleProducts((p) => p.filter((_, idx) => idx !== i))}>✕</button>}
+              <div key={i}>
+                <div className="product-row">
+                  <select className="form-control" value={sp.productId} onChange={(e) => setSaleProducts((p) => p.map((x, idx) => idx === i ? { ...x, productId: e.target.value } : x))} style={{ flex: 2, borderColor: overStock ? T.danger : undefined }}>
+                    <option value="">Selecione produto...</option>
+                    {sortedProducts.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.totalQty} {p.unit})</option>)}
+                  </select>
+                  <input type="number" className="form-control" placeholder="Qtd" style={{ width: 70, borderColor: overStock ? T.danger : undefined }} value={sp.qty}
+                    onChange={(e) => setSaleProducts((p) => p.map((x, idx) => idx === i ? { ...x, qty: e.target.value } : x))} />
+                  <select className="form-control" value={sp.sessionType} onChange={(e) => setSaleProducts((p) => p.map((x, idx) => idx === i ? { ...x, sessionType: e.target.value } : x))} style={{ flex: 1 }}>
+                    <option value="initial">Inicial</option>
+                    <option value="retoque">Retoque</option>
+                    <option value="manutencao">Manutenção</option>
+                    <option value="outro">Outro</option>
+                  </select>
+                  {saleProducts.length > 1 && <button className="btn btn-sm btn-danger" onClick={() => setSaleProducts((p) => p.filter((_, idx) => idx !== i))}>✕</button>}
+                </div>
+                {overStock && <div style={{ color: T.danger, fontSize: 12, marginTop: 2 }}>Estoque insuficiente — disponível: {prod.totalQty} {prod.unit}</div>}
               </div>
             );
           })}
@@ -1935,8 +1950,8 @@ function PatientForm({ ctx, patient, onClose }) {
       setPatients((prev) => prev.map((p) => p.id === patient.id ? updated : p));
       await db.updatePatient(updated);
     } else {
-      setPatients((prev) => [...prev, { id: Date.now(), ...form }]);
-      await db.createPatient({ id: Date.now(), ...form });
+      const created = await db.createPatient(form);
+      setPatients((prev) => sortByName([...prev, created]));
     }
     onClose();
   }
@@ -1962,12 +1977,41 @@ function PatientForm({ ctx, patient, onClose }) {
 
 // ─── STOCK ────────────────────────────────────────────────────────────────────
 function StockPage({ ctx }) {
-  const { products, stockEntries, setModal } = ctx;
+  const { products, stockEntries, setModal, setProducts, suppliers, setSuppliers } = ctx;
   const [tab, setTab] = useState("stock");
+  const [newSupplierName, setNewSupplierName] = useState("");
+  const [deletingSupId, setDeletingSupId] = useState(null);
 
   function openNew() { setModal({ content: <ProductForm ctx={ctx} onClose={() => setModal(null)} />, onClose: () => setModal(null) }); }
   function openEditProduct(product) { setModal({ content: <ProductForm ctx={ctx} product={product} onClose={() => setModal(null)} />, onClose: () => setModal(null) }); }
   function openEntry(product) { setModal({ content: <StockEntryModal product={product} ctx={ctx} onClose={() => setModal(null)} />, onClose: () => setModal(null) }); }
+
+  async function deleteProduct(p) {
+    if (!window.confirm(`Excluir "${p.name}"? Esta ação não pode ser desfeita.`)) return;
+    try {
+      await db.deleteProduct(p.id);
+      setProducts((prev) => prev.filter((x) => x.id !== p.id));
+    } catch (e) { console.error(e); alert("Erro ao excluir produto."); }
+  }
+
+  async function addSupplier() {
+    if (!newSupplierName.trim()) return;
+    try {
+      const created = await db.createSupplier(newSupplierName.trim());
+      setSuppliers((prev) => sortByName([...prev, created]));
+      setNewSupplierName("");
+    } catch (e) { alert("Erro ao criar fornecedor (nome duplicado?)."); }
+  }
+
+  async function deleteSupplier(sup) {
+    if (!window.confirm(`Remover fornecedor "${sup.name}"?`)) return;
+    try {
+      setDeletingSupId(sup.id);
+      await db.deleteSupplier(sup.id);
+      setSuppliers((prev) => prev.filter((x) => x.id !== sup.id));
+    } catch (e) { alert("Erro ao remover fornecedor."); }
+    finally { setDeletingSupId(null); }
+  }
 
   return (
     <div>
@@ -1975,8 +2019,9 @@ function StockPage({ ctx }) {
         <div className="tabs" style={{ marginBottom: 0 }}>
           <button className={`tab ${tab === "stock" ? "active" : ""}`} onClick={() => setTab("stock")}>Estoque Atual</button>
           <button className={`tab ${tab === "entries" ? "active" : ""}`} onClick={() => setTab("entries")}>Histórico de Compras</button>
+          <button className={`tab ${tab === "suppliers" ? "active" : ""}`} onClick={() => setTab("suppliers")}>Fornecedores</button>
         </div>
-        <button className="btn btn-primary" onClick={openNew}>+ Novo Produto</button>
+        {tab !== "suppliers" && <button className="btn btn-primary" onClick={openNew}>+ Novo Produto</button>}
       </div>
       <div style={{ marginBottom: 20 }} />
 
@@ -2002,6 +2047,7 @@ function StockPage({ ctx }) {
                         <div style={{ display: "flex", gap: 4 }}>
                           <button className="btn btn-sm btn-secondary" onClick={() => openEditProduct(p)}>✏️</button>
                           <button className="btn btn-sm btn-secondary" onClick={() => openEntry(p)}>+ Compra</button>
+                          <button className="btn btn-sm btn-danger" onClick={() => deleteProduct(p)} title="Excluir produto">🗑</button>
                         </div>
                       </td>
                     </tr>
@@ -2037,6 +2083,25 @@ function StockPage({ ctx }) {
           </div>
         </div>
       )}
+
+      {tab === "suppliers" && (
+        <div className="card" style={{ maxWidth: 480 }}>
+          <div style={{ fontWeight: 600, marginBottom: 16 }}>Fornecedores</div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+            <input className="form-control" placeholder="Nome do fornecedor…" value={newSupplierName} onChange={(e) => setNewSupplierName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addSupplier()} />
+            <button className="btn btn-primary btn-sm" onClick={addSupplier}>+ Adicionar</button>
+          </div>
+          {suppliers.length === 0 && <div className="empty">Nenhum fornecedor cadastrado</div>}
+          <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+            {suppliers.map((sup) => (
+              <li key={sup.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: `1px solid ${T.border}` }}>
+                <span>{sup.name}</span>
+                <button className="btn btn-sm btn-danger" disabled={deletingSupId === sup.id} onClick={() => deleteSupplier(sup)}>🗑</button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
@@ -2058,7 +2123,8 @@ function ProductForm({ ctx, product, onClose }) {
       setProducts((prev) => prev.map((p) => p.id === product.id ? updated : p));
       await db.updateProduct(updated);
     } else {
-      setProducts((prev) => [...prev, { id: Date.now(), name: form.name, unit: form.unit, totalQty: +form.totalQty || 0, avgCost: +form.avgCost || 0, minStock: +form.minStock || 0 }]);
+      const created = await db.createProduct({ name: form.name, unit: form.unit, totalQty: +form.totalQty || 0, avgCost: +form.avgCost || 0, minStock: +form.minStock || 0 });
+      setProducts((prev) => sortByName([...prev, created]));
     }
     onClose();
   }
@@ -2079,11 +2145,11 @@ function ProductForm({ ctx, product, onClose }) {
           <div className="alert alert-info" style={{ display: "block", marginBottom: 8 }}>ℹ️ Quantidade e custo médio são gerenciados pelas entradas de estoque.</div>
         ) : (
           <div className="form-row form-row-2">
-            <div className="form-group"><label>Qtd. Inicial</label><input type="number" className="form-control" value={form.totalQty} onChange={(e) => setForm({ ...form, totalQty: e.target.value })} /></div>
-            <div className="form-group"><label>Custo Médio (R$/{form.unit})</label><input type="number" step="0.01" className="form-control" value={form.avgCost} onChange={(e) => setForm({ ...form, avgCost: e.target.value })} /></div>
+            <div className="form-group"><label>Qtd. Inicial <span style={{ fontWeight: 400, color: "#999" }}>(opcional)</span></label><input type="number" className="form-control" value={form.totalQty} onChange={(e) => setForm({ ...form, totalQty: e.target.value })} /></div>
+            <div className="form-group"><label>Custo Médio (R$/{form.unit}) <span style={{ fontWeight: 400, color: "#999" }}>(opcional)</span></label><input type="number" step="0.01" className="form-control" value={form.avgCost} onChange={(e) => setForm({ ...form, avgCost: e.target.value })} /></div>
           </div>
         )}
-        <div className="form-group"><label>Estoque Mínimo</label><input type="number" className="form-control" value={form.minStock} onChange={(e) => setForm({ ...form, minStock: e.target.value })} /></div>
+        <div className="form-group"><label>Estoque Mínimo <span style={{ fontWeight: 400, color: "#999" }}>(opcional)</span></label><input type="number" className="form-control" value={form.minStock} onChange={(e) => setForm({ ...form, minStock: e.target.value })} /></div>
       </div>
       <div className="modal-footer">
         <button className="btn btn-secondary" onClick={onClose}>Cancelar</button>
@@ -2094,18 +2160,38 @@ function ProductForm({ ctx, product, onClose }) {
 }
 
 function StockEntryModal({ product, ctx, onClose }) {
-  const { setProducts, setStockEntries } = ctx;
+  const { setProducts, setStockEntries, suppliers, setSuppliers } = ctx;
   const [form, setForm] = useState({ qty: "", totalCost: "", supplier: "", date: today() });
+  const [newSupplierName, setNewSupplierName] = useState("");
+  const [showNewSupplier, setShowNewSupplier] = useState(false);
+  const [saving, setSaving] = useState(false);
   const costPerUnit = form.qty > 0 && form.totalCost > 0 ? (+form.totalCost / +form.qty) : null;
   const newAvg = costPerUnit !== null ? (product.totalQty * product.avgCost + +form.totalCost) / (product.totalQty + +form.qty) : null;
 
-  function save() {
+  async function addSupplier() {
+    if (!newSupplierName.trim()) return;
+    try {
+      const created = await db.createSupplier(newSupplierName.trim());
+      setSuppliers((prev) => sortByName([...prev, created]));
+      setForm((f) => ({ ...f, supplier: created.name }));
+      setNewSupplierName("");
+      setShowNewSupplier(false);
+    } catch (e) { console.error(e); }
+  }
+
+  async function save() {
     if (!form.qty || !form.totalCost) return;
-    const cpu = +form.totalCost / +form.qty;
-    const na = (product.totalQty * product.avgCost + +form.totalCost) / (product.totalQty + +form.qty);
-    setProducts((prev) => prev.map((p) => p.id === product.id ? { ...p, totalQty: p.totalQty + +form.qty, avgCost: +na.toFixed(4) } : p));
-    setStockEntries((prev) => [...prev, { id: Date.now(), productId: product.id, qty: +form.qty, totalCost: +form.totalCost, costPerUnit: +cpu.toFixed(4), supplier: form.supplier, date: form.date }]);
-    onClose();
+    setSaving(true);
+    try {
+      const cpu = +form.totalCost / +form.qty;
+      const newQty = product.totalQty + +form.qty;
+      const na = (product.totalQty * product.avgCost + +form.totalCost) / newQty;
+      const created = await db.createStockEntry({ productId: product.id, qty: +form.qty, totalCost: +form.totalCost, costPerUnit: +cpu.toFixed(4), supplier: form.supplier, date: form.date });
+      await db.updateProductStock(product.id, newQty, +na.toFixed(4));
+      setProducts((prev) => prev.map((p) => p.id === product.id ? { ...p, totalQty: newQty, avgCost: +na.toFixed(4) } : p));
+      setStockEntries((prev) => [created, ...prev]);
+      onClose();
+    } catch (e) { console.error(e); setSaving(false); }
   }
 
   return (
@@ -2120,7 +2206,21 @@ function StockEntryModal({ product, ctx, onClose }) {
           <div className="form-group"><label>Custo Total (R$)</label><input type="number" step="0.01" className="form-control" value={form.totalCost} onChange={(e) => setForm({ ...form, totalCost: e.target.value })} /></div>
         </div>
         <div className="form-row form-row-2">
-          <div className="form-group"><label>Fornecedor</label><input className="form-control" value={form.supplier} onChange={(e) => setForm({ ...form, supplier: e.target.value })} /></div>
+          <div className="form-group">
+            <label>Fornecedor</label>
+            <select className="form-control" value={form.supplier} onChange={(e) => { if (e.target.value === "__new__") { setShowNewSupplier(true); } else { setForm({ ...form, supplier: e.target.value }); } }}>
+              <option value="">— Selecione —</option>
+              {suppliers.map((s) => <option key={s.id} value={s.name}>{s.name}</option>)}
+              <option value="__new__">+ Novo fornecedor…</option>
+            </select>
+            {showNewSupplier && (
+              <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                <input className="form-control" value={newSupplierName} onChange={(e) => setNewSupplierName(e.target.value)} placeholder="Nome do fornecedor" style={{ flex: 1 }} onKeyDown={(e) => e.key === "Enter" && addSupplier()} autoFocus />
+                <button className="btn btn-primary btn-sm" onClick={addSupplier}>✓</button>
+                <button className="btn btn-ghost btn-sm" onClick={() => { setShowNewSupplier(false); setNewSupplierName(""); }}>✕</button>
+              </div>
+            )}
+          </div>
           <div className="form-group"><label>Data</label><input type="date" className="form-control" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></div>
         </div>
         {costPerUnit !== null && (
@@ -2133,7 +2233,7 @@ function StockEntryModal({ product, ctx, onClose }) {
       </div>
       <div className="modal-footer">
         <button className="btn btn-secondary" onClick={onClose}>Cancelar</button>
-        <button className="btn btn-primary" onClick={save}>Confirmar Compra</button>
+        <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? "Salvando…" : "Confirmar Compra"}</button>
       </div>
     </>
   );

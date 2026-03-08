@@ -157,8 +157,18 @@ ALTER TABLE quotation_items ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "auth users" ON quotations FOR ALL USING (auth.role() = 'authenticated');
 CREATE POLICY "auth users" ON quotation_items FOR ALL USING (auth.role() = 'authenticated');
 
+-- ── Suppliers ─────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS suppliers (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL UNIQUE,
+  created_at timestamptz DEFAULT now()
+);
+ALTER TABLE suppliers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "auth users" ON suppliers FOR ALL USING (auth.role() = 'authenticated');
+
 -- ── Migrations (run these on existing DB) ────────────────────────────────────
 -- ALTER TABLE appointments ADD COLUMN IF NOT EXISTS duration integer DEFAULT 60;
 -- ALTER TABLE appointments ADD COLUMN IF NOT EXISTS appointment_type text DEFAULT 'consulta';
 -- ALTER TABLE sales ADD COLUMN IF NOT EXISTS quotation_id uuid;
 -- ALTER TABLE sales ADD COLUMN IF NOT EXISTS sale_services jsonb;
+-- Run suppliers table above if not yet created.

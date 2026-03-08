@@ -42,6 +42,29 @@ export async function updateProductStock(id, totalQty, avgCost) {
   if (error) throw error;
 }
 
+export async function deleteProduct(id) {
+  const { error } = await supabase.from("products").delete().eq("id", id);
+  if (error) throw error;
+}
+
+// ── suppliers ─────────────────────────────────────────────────────────────────
+export async function fetchSuppliers() {
+  const { data, error } = await supabase.from("suppliers").select("*").order("name");
+  if (error) throw error;
+  return data.map((s) => ({ id: s.id, name: s.name }));
+}
+
+export async function createSupplier(name) {
+  const { data, error } = await supabase.from("suppliers").insert({ name }).select().single();
+  if (error) throw error;
+  return { id: data.id, name: data.name };
+}
+
+export async function deleteSupplier(id) {
+  const { error } = await supabase.from("suppliers").delete().eq("id", id);
+  if (error) throw error;
+}
+
 // ── stock entries ─────────────────────────────────────────────────────────────
 export async function fetchStockEntries() {
   const { data, error } = await supabase.from("stock_entries").select("*").order("date", { ascending: false });
