@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import * as db from "./db";
 import { supabase } from "./supabase";
 import { subscribeToPush } from "./usePushNotifications";
@@ -293,9 +293,11 @@ const css = `
     .sidebar { display: none !important; }
     .content { padding: 12px; padding-bottom: 80px; }
     .grid-4, .grid-3, .grid-2 { grid-template-columns: 1fr; }
-    .topbar { padding: 12px 16px; }
+    .topbar { padding: 12px 16px; padding-top: max(12px, env(safe-area-inset-top)); }
     .form-row-2, .form-row-3 { grid-template-columns: 1fr; }
     .product-row { flex-wrap: wrap; }
+    .table-wrap { display: block; -webkit-overflow-scrolling: touch; }
+    table { min-width: max-content; }
   }
 
   /* ── Bottom nav (mobile only) ── */
@@ -489,12 +491,13 @@ function MainApp({ user, onLogout }) {
     { id: "stock", icon: "📦", label: "Estoque", group: "cad" },
     { id: "services", icon: "💉", label: "Procedimentos", group: "cad" },
     { id: "costs", icon: "🧾", label: "Custos", group: "cad" },
+    { id: "locations", icon: "📍", label: "Locais", group: "cad" },
     { id: "finance", icon: "📊", label: "Financeiro", group: "fin" },
   ];
   const groups = {};
   NAV.forEach((n) => { const g = n.group || "main"; (groups[g] = groups[g] || []).push(n); });
 
-  const PAGES = { dashboard: DashboardPage, appointments: AppointmentsPage, sales: SalesPage, patients: PatientsPage, stock: StockPage, services: ServicesPage, costs: CostsPage, finance: FinancePage };
+  const PAGES = { dashboard: DashboardPage, appointments: AppointmentsPage, sales: SalesPage, patients: PatientsPage, stock: StockPage, services: ServicesPage, costs: CostsPage, locations: LocationsPage, finance: FinancePage };
   const PageComponent = PAGES[page] || DashboardPage;
 
   // Bottom nav: 4 pinned + "Mais" drawer
@@ -630,6 +633,59 @@ function WaBtn({ phone, message, label = "WhatsApp" }) {
   );
 }
 
+// ─── SEARCH SELECT ────────────────────────────────────────────────────────────
+function SearchSelect({ options, value, onChange, placeholder = "Buscar…" }) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const selected = options.find((o) => String(o.value) === String(value));
+  const filtered = query
+    ? options.filter((o) => o.label.toLowerCase().includes(query.toLowerCase()))
+    : options;
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <input
+        className="form-control"
+        value={open ? query : (selected?.label || "")}
+        onFocus={() => { setOpen(true); setQuery(""); }}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder={placeholder}
+      />
+      {open && (
+        <div style={{
+          position: "absolute", zIndex: 999, background: "#fff",
+          border: "1.5px solid #D5E5EE", borderRadius: 8, width: "100%",
+          maxHeight: 200, overflowY: "auto",
+          boxShadow: "0 4px 12px rgba(17,41,51,0.15)", marginTop: 2,
+        }}>
+          {filtered.length === 0 && (
+            <div style={{ padding: "10px 12px", color: T.grey, fontSize: 13 }}>Sem resultados</div>
+          )}
+          {filtered.map((o) => (
+            <div key={o.value}
+              onMouseDown={() => { onChange(o.value); setOpen(false); setQuery(""); }}
+              style={{
+                padding: "9px 12px", cursor: "pointer", fontSize: 13.5,
+                background: String(o.value) === String(value) ? T.light : "transparent",
+                borderBottom: `1px solid ${T.light}`,
+              }}>
+              {o.label}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
 function DashboardPage({ ctx }) {
   const { sales, costs, patients, appointments, products, services } = ctx;
@@ -646,7 +702,20 @@ function DashboardPage({ ctx }) {
   const todayAppt = appointments.filter((a) => a.date === todayStr);
 
   const latePatients = patients.filter((p) => p.status === "late");
-  const latePix = sales.filter((s) => s.paymentMethod === "pixInstallment" && s.paidInstallments < s.installments);
+  const alertDate = new Date(); alertDate.setHours(0, 0, 0, 0);
+  const alertIn3 = new Date(alertDate); alertIn3.setDate(alertDate.getDate() + 3);
+  const latePix = sales.filter((s) => {
+    if (s.paymentMethod !== "pixInstallment") return false;
+    if (s.paidInstallments >= s.installments) return false;
+    if (s.installmentsData?.length > 0) {
+      return s.installmentsData.some((inst) => {
+        if (inst.paid) return false;
+        const due = new Date(inst.dueDate + "T12:00:00");
+        return due <= alertIn3;
+      });
+    }
+    return true; // legado: sem data, sempre alerta
+  });
   const lowStock = products.filter((p) => p.totalQty <= p.minStock);
   const birthdaySoon = patients.filter((p) => isBirthdaySoon(p.birthdate, 3));
 
@@ -906,10 +975,14 @@ function AppointmentForm({ ctx, onClose, prefill = {} }) {
           <div className="form-group">
             <label>Paciente</label>
             <div style={{ display: "flex", gap: 8 }}>
-              <select className="form-control" value={form.patientId} onChange={(e) => setForm({ ...form, patientId: e.target.value })}>
-                <option value="">Selecione...</option>
-                {sortedPatients.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
+              <div style={{ flex: 1 }}>
+                <SearchSelect
+                  options={sortedPatients.map((p) => ({ value: p.id, label: p.name }))}
+                  value={form.patientId}
+                  onChange={(v) => setForm({ ...form, patientId: v })}
+                  placeholder="Buscar paciente…"
+                />
+              </div>
               <button className="btn btn-secondary" style={{ whiteSpace: "nowrap" }} onClick={() => setShowNew(true)}>+ Novo</button>
             </div>
           </div>
@@ -933,10 +1006,12 @@ function AppointmentForm({ ctx, onClose, prefill = {} }) {
         )}
         <div className="form-group">
           <label>Procedimento</label>
-          <select className="form-control" value={form.serviceId} onChange={(e) => setForm({ ...form, serviceId: e.target.value })}>
-            <option value="">Selecione...</option>
-            {sortedServices.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
+          <SearchSelect
+            options={sortedServices.map((s) => ({ value: s.id, label: s.name }))}
+            value={form.serviceId}
+            onChange={(v) => setForm({ ...form, serviceId: v })}
+            placeholder="Buscar procedimento…"
+          />
         </div>
         <div className="form-row form-row-2">
           <div className="form-group"><label>Data</label><input type="date" className="form-control" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></div>
@@ -980,6 +1055,9 @@ function SalesPage({ ctx }) {
   }
   function openPix(sale) {
     setModal({ content: <PixInstallmentModal sale={sale} ctx={ctx} onClose={() => setModal(null)} />, onClose: () => setModal(null) });
+  }
+  function openEditSale(sale) {
+    setModal({ lg: true, content: <SaleForm ctx={ctx} editSale={sale} onClose={() => setModal(null)} />, onClose: () => setModal(null) });
   }
   const [confirmDelete, setConfirmDelete] = useState(null);
 
@@ -1057,7 +1135,8 @@ function SalesPage({ ctx }) {
                     <td style={{ color: net >= 0 ? T.success : T.danger, fontWeight: 600 }}>{fmt(net)}</td>
                     <td>
                       <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                        {isPix && !allPaid && <button className="btn btn-sm btn-secondary" onClick={() => openPix(s)}>💳 Parcelas</button>}
+                        <button className="btn btn-sm btn-secondary" onClick={() => openEditSale(s)}>✏️</button>
+                        {isPix && <button className="btn btn-sm btn-secondary" onClick={() => openPix(s)}>💳 Parcelas</button>}
                         {confirmDelete === s.id ? (
                           <>
                             <span style={{ fontSize: 12, color: T.danger, fontWeight: 500 }}>Confirmar?</span>
@@ -1081,28 +1160,36 @@ function SalesPage({ ctx }) {
 }
 
 // ─── SALE FORM ────────────────────────────────────────────────────────────────
-function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillLocation, onClose }) {
-  const { patients, services, products, setSales, setProducts, setAppointments, setPendingReturn, locations } = ctx;
+function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillLocation, editSale, onClose }) {
+  const { patients, setPatients, services, products, setSales, setProducts, setAppointments, setPendingReturn, locations } = ctx;
   const defaultLocation = prefillLocation || (locations || []).find((l) => l.name === "Clínica")?.name || (locations?.[0]?.name || "Clínica");
+  const editing = !!editSale;
 
   const [form, setForm] = useState({
-    patientId: prefillPatient || "",
-    serviceId: prefillService || "",
-    professional: ctx.user?.name || "Dr. Murilo",
-    date: today(),
-    price: "",
-    location: defaultLocation,
-    paymentMethod: "pix",
-    cardBrand: "Mastercard",
-    installments: 1,
-    creditFeeRate: 0,
-    netAmount: "",
-    netAmountEdited: false,
-    downPaymentAmount: "",
-    downPaymentMethod: "pix",
+    patientId: editSale ? String(editSale.patientId) : (prefillPatient || ""),
+    serviceId: editSale ? String(editSale.serviceId) : (prefillService || ""),
+    professional: editSale?.professional || ctx.user?.name || "Dr. Murilo",
+    date: editSale?.date || today(),
+    price: editSale?.price || "",
+    location: editSale?.location || defaultLocation,
+    paymentMethod: editSale?.paymentMethod || "pix",
+    cardBrand: editSale?.cardBrand || "Mastercard",
+    installments: editSale?.installments || 1,
+    creditFeeRate: editSale?.creditFeeRate || 0,
+    netAmount: editSale?.netAmount || "",
+    netAmountEdited: !!editSale,
+    downPaymentAmount: editSale?.downPaymentAmount || "",
+    downPaymentMethod: editSale?.downPaymentMethod || "pix",
   });
-  const [saleProducts, setSaleProducts] = useState([{ productId: "", qty: "", sessionType: "initial" }]);
-  const [showEntry, setShowEntry] = useState(false);
+  const [saleProducts, setSaleProducts] = useState(
+    editSale?.products?.length > 0
+      ? editSale.products.map((sp) => ({ productId: String(sp.productId), qty: String(sp.qty), sessionType: sp.sessionType }))
+      : [{ productId: "", qty: "", sessionType: "initial" }]
+  );
+  const [showEntry, setShowEntry] = useState(editing && (editSale.downPaymentAmount > 0));
+  const [installmentsPreview, setInstallmentsPreview] = useState([]);
+  const [showNewPatient, setShowNewPatient] = useState(false);
+  const [newPatientName, setNewPatientName] = useState("");
 
   const needsBrand = form.paymentMethod === "credit" || form.paymentMethod === "debit";
   const needsInstallments = form.paymentMethod === "credit" || form.paymentMethod === "pixInstallment";
@@ -1125,6 +1212,56 @@ function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillL
     }));
   }, [form.paymentMethod, form.cardBrand, form.installments, form.price]);
 
+  // Auto-generate installments preview for pixInstallment
+  useEffect(() => {
+    if (form.paymentMethod !== "pixInstallment") { setInstallmentsPreview([]); return; }
+    const count = +form.installments || 1;
+    const total = +form.price || 0;
+    const entrada = showEntry ? (+form.downPaymentAmount || 0) : 0;
+    const remaining = total - entrada;
+    const baseValue = +(remaining / count).toFixed(2);
+    const lastValue = +(remaining - baseValue * (count - 1)).toFixed(2);
+    const baseDate = form.date ? new Date(form.date + "T12:00:00") : new Date();
+    setInstallmentsPreview((prev) => {
+      // In edit mode: if existing data matches count, load it once (preserve edits)
+      if (editing && editSale.installmentsData?.length === count && prev.length === 0) {
+        return editSale.installmentsData.map((item) => ({ ...item }));
+      }
+      // If count changed or new sale: regenerate
+      if (prev.length === count && prev.length > 0) return prev;
+      return Array.from({ length: count }, (_, i) => {
+        const due = new Date(baseDate);
+        due.setMonth(due.getMonth() + i + 1);
+        return {
+          value: i === count - 1 ? lastValue : baseValue,
+          dueDate: due.toISOString().slice(0, 10),
+          paid: prev[i]?.paid || false,
+        };
+      });
+    });
+  }, [form.paymentMethod, form.installments, form.price, form.date, showEntry, form.downPaymentAmount]);
+
+  function updateInstallmentRow(index, field, value) {
+    setInstallmentsPreview((prev) => prev.map((item, i) => i === index ? { ...item, [field]: value } : item));
+  }
+
+  async function saveNewPatient() {
+    if (!newPatientName.trim()) return;
+    try {
+      const created = await db.createPatient({ name: newPatientName.trim(), phone: "", email: "", birthdate: null, notes: "", status: "ok" });
+      setPatients((prev) => sortByName([...prev, created]));
+      setForm((f) => ({ ...f, patientId: created.id }));
+    } catch (e) {
+      console.error("Erro ao criar paciente:", e);
+    }
+    setShowNewPatient(false);
+    setNewPatientName("");
+  }
+
+  const installmentsSum = installmentsPreview.reduce((s, x) => s + (+x.value || 0), 0);
+  const remainingAmount = (+form.price || 0) - (showEntry ? (+form.downPaymentAmount || 0) : 0);
+  const sumMismatch = form.paymentMethod === "pixInstallment" && installmentsPreview.length > 0 && Math.abs(installmentsSum - remainingAmount) > 0.01;
+
   const productCost = saleProducts.reduce((sum, sp) => {
     const prod = products.find((x) => x.id === +sp.productId);
     return sum + (prod ? prod.avgCost * (+sp.qty || 0) : 0);
@@ -1132,34 +1269,51 @@ function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillL
   const feeAmt = (+form.price || 0) - (+form.netAmount || 0);
   const netValue = (+form.netAmount || 0) - productCost;
 
-  function save() {
+  async function save() {
     if (!form.patientId || !form.serviceId || !form.price) return;
+    if (sumMismatch) return;
     const validProds = saleProducts.filter((sp) => sp.productId && sp.qty > 0);
     const enriched = validProds.map((sp) => {
       const prod = products.find((x) => x.id === +sp.productId);
       return { productId: +sp.productId, qty: +sp.qty, costAtSale: prod?.avgCost || 0, sessionType: sp.sessionType };
     });
-    const newSale = {
-      id: Date.now(), ...form,
+    const saleData = {
+      ...form,
       patientId: +form.patientId, serviceId: +form.serviceId,
       price: +form.price, installments: +form.installments,
       creditFeeRate: +form.creditFeeRate, netAmount: +form.netAmount,
       downPaymentAmount: showEntry ? +form.downPaymentAmount : 0,
       downPaymentMethod: showEntry ? form.downPaymentMethod : "",
-      paidInstallments: form.paymentMethod === "pixInstallment" ? (showEntry ? 1 : 0) : +form.installments,
-      products: enriched, appointmentId: appointmentId || null,
+      installmentsData: form.paymentMethod === "pixInstallment" ? installmentsPreview : [],
+      products: enriched,
     };
-    setSales((prev) => [...prev, newSale]);
-    setProducts((prev) => prev.map((p) => {
-      const consumed = enriched.filter((x) => x.productId === p.id).reduce((s, x) => s + x.qty, 0);
-      return consumed > 0 ? { ...p, totalQty: Math.max(0, p.totalQty - consumed) } : p;
-    }));
-    if (appointmentId) setAppointments((prev) => prev.map((a) => a.id === appointmentId ? { ...a, status: "done", saleId: newSale.id } : a));
-    const svc = services.find((s) => s.id === +form.serviceId);
-    const pat = patients.find((p) => p.id === +form.patientId);
-    if (svc?.needsReturn) {
-      const appt = { id: appointmentId || null, patientId: +form.patientId, serviceId: +form.serviceId, date: form.date };
-      setPendingReturn({ appointment: appt, service: svc, patient: pat });
+    if (editing) {
+      const updated = {
+        ...saleData, id: editSale.id,
+        paidInstallments: editSale.paidInstallments,
+        appointmentId: editSale.appointmentId,
+      };
+      setSales((prev) => prev.map((s) => s.id === editSale.id ? updated : s));
+      await db.updateSale(updated, enriched);
+    } else {
+      const newSale = {
+        id: Date.now(), ...saleData,
+        paidInstallments: form.paymentMethod === "pixInstallment" ? 0 : +form.installments,
+        appointmentId: appointmentId || null,
+      };
+      setSales((prev) => [...prev, newSale]);
+      setProducts((prev) => prev.map((p) => {
+        const consumed = enriched.filter((x) => x.productId === p.id).reduce((s, x) => s + x.qty, 0);
+        return consumed > 0 ? { ...p, totalQty: Math.max(0, p.totalQty - consumed) } : p;
+      }));
+      if (appointmentId) setAppointments((prev) => prev.map((a) => a.id === appointmentId ? { ...a, status: "done", saleId: newSale.id } : a));
+      await db.createSale(newSale, enriched);
+      const svc = services.find((s) => s.id === +form.serviceId);
+      const pat = patients.find((p) => p.id === +form.patientId);
+      if (svc?.needsReturn) {
+        const appt = { id: appointmentId || null, patientId: +form.patientId, serviceId: +form.serviceId, date: form.date };
+        setPendingReturn({ appointment: appt, service: svc, patient: pat });
+      }
     }
     onClose();
   }
@@ -1171,7 +1325,7 @@ function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillL
   return (
     <>
       <div className="modal-header">
-        <div className="modal-title">{appointmentId ? "Realizar Venda" : "Nova Venda"}</div>
+        <div className="modal-title">{editing ? "Editar Venda" : (appointmentId ? "Realizar Venda" : "Nova Venda")}</div>
         <button className="btn btn-ghost" onClick={onClose}>✕</button>
       </div>
       <div className="modal-body">
@@ -1180,17 +1334,36 @@ function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillL
         <div className="form-row form-row-2">
           <div className="form-group">
             <label>Paciente</label>
-            <select className="form-control" value={form.patientId} onChange={(e) => setForm({ ...form, patientId: e.target.value })}>
-              <option value="">Selecione...</option>
-              {sortedPatients.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
+            <SearchSelect
+              options={sortedPatients.map((p) => ({ value: p.id, label: p.name }))}
+              value={form.patientId}
+              onChange={(v) => setForm({ ...form, patientId: v })}
+              placeholder="Buscar paciente…"
+            />
+            {!showNewPatient ? (
+              <button type="button" className="btn btn-ghost btn-sm"
+                style={{ marginTop: 4, fontSize: 12, padding: "3px 8px" }}
+                onClick={() => setShowNewPatient(true)}>+ Novo paciente</button>
+            ) : (
+              <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                <input className="form-control" value={newPatientName}
+                  onChange={(e) => setNewPatientName(e.target.value)}
+                  placeholder="Nome do paciente" style={{ flex: 1 }}
+                  onKeyDown={(e) => e.key === "Enter" && saveNewPatient()} />
+                <button type="button" className="btn btn-primary btn-sm" onClick={saveNewPatient}>✓</button>
+                <button type="button" className="btn btn-ghost btn-sm"
+                  onClick={() => { setShowNewPatient(false); setNewPatientName(""); }}>✕</button>
+              </div>
+            )}
           </div>
           <div className="form-group">
             <label>Procedimento</label>
-            <select className="form-control" value={form.serviceId} onChange={(e) => setForm({ ...form, serviceId: e.target.value })}>
-              <option value="">Selecione...</option>
-              {sortedServices.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
+            <SearchSelect
+              options={sortedServices.map((s) => ({ value: s.id, label: s.name }))}
+              value={form.serviceId}
+              onChange={(v) => setForm({ ...form, serviceId: v })}
+              placeholder="Buscar procedimento…"
+            />
           </div>
         </div>
 
@@ -1268,6 +1441,52 @@ function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillL
           )}
         </div>
 
+        {/* Parcelas preview (pixInstallment) */}
+        {form.paymentMethod === "pixInstallment" && installmentsPreview.length > 0 && (
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: "0.06em", color: T.grey, fontWeight: 500, marginBottom: 8, display: "block" }}>
+              Parcelas — preview editável
+            </label>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", fontSize: 13, borderCollapse: "collapse" }}>
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: "left", paddingBottom: 4, color: T.grey, fontWeight: 500, width: 24 }}>#</th>
+                    <th style={{ textAlign: "left", paddingBottom: 4, color: T.grey, fontWeight: 500 }}>Vencimento</th>
+                    <th style={{ textAlign: "right", paddingBottom: 4, color: T.grey, fontWeight: 500 }}>Valor (R$)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {installmentsPreview.map((item, i) => (
+                    <tr key={i} style={{ borderTop: `1px solid ${T.light}` }}>
+                      <td style={{ padding: "6px 0", color: T.grey }}>{i + 1}</td>
+                      <td style={{ padding: "6px 4px" }}>
+                        <input type="date" className="form-control" style={{ padding: "4px 6px", fontSize: 13 }}
+                          value={item.dueDate} onChange={(e) => updateInstallmentRow(i, "dueDate", e.target.value)} />
+                      </td>
+                      <td style={{ padding: "6px 0", textAlign: "right" }}>
+                        <input type="number" className="form-control" step="0.01" style={{ padding: "4px 6px", fontSize: 13, textAlign: "right", width: 100 }}
+                          value={item.value} onChange={(e) => updateInstallmentRow(i, "value", e.target.value)} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr style={{ borderTop: `2px solid ${T.dark}` }}>
+                    <td colSpan={2} style={{ paddingTop: 6, fontWeight: 600, fontSize: 13 }}>Total parcelas</td>
+                    <td style={{ paddingTop: 6, textAlign: "right", fontWeight: 700, color: sumMismatch ? T.danger : T.success }}>{fmt(installmentsSum)}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+            {sumMismatch && (
+              <div style={{ color: T.danger, fontSize: 12, marginTop: 4 }}>
+                ⚠️ Soma ({fmt(installmentsSum)}) difere do valor restante ({fmt(remainingAmount)}).
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Entrada (toggle) */}
         <div style={{ marginBottom: 16 }}>
           <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, fontWeight: 500, color: T.teal }}>
@@ -1320,8 +1539,9 @@ function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillL
         </div>
       </div>
       <div className="modal-footer">
+        {editing && <span style={{ fontSize: 12, color: T.grey, flex: 1 }}>ℹ️ Editar venda não ajusta estoque automaticamente.</span>}
         <button className="btn btn-secondary" onClick={onClose}>Cancelar</button>
-        <button className="btn btn-primary" onClick={save}>Salvar Venda</button>
+        <button className="btn btn-primary" onClick={save} disabled={sumMismatch}>{editing ? "Salvar Alterações" : "Salvar Venda"}</button>
       </div>
     </>
   );
@@ -1330,10 +1550,35 @@ function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillL
 function PixInstallmentModal({ sale, ctx, onClose }) {
   const { patients, setSales } = ctx;
   const p = patients.find((x) => x.id === sale.patientId);
-  const installmentValue = sale.price / sale.installments;
+  const entrada = sale.downPaymentAmount || 0;
+  const hasData = sale.installmentsData && sale.installmentsData.length > 0;
+  // Legacy: equal value per installment
+  const installmentValue = (sale.price - entrada) / sale.installments;
+  // New: derived values from installmentsData
+  const totalPaid = hasData ? sale.installmentsData.filter((x) => x.paid).length : sale.paidInstallments;
+  const pendingBalance = hasData
+    ? sale.installmentsData.filter((x) => !x.paid).reduce((s, x) => s + (+x.value || 0), 0)
+    : (sale.installments - sale.paidInstallments) * installmentValue;
 
-  function pay() {
-    setSales((prev) => prev.map((s) => s.id === sale.id ? { ...s, paidInstallments: Math.min(s.installments, s.paidInstallments + 1) } : s));
+  // New per-installment toggle
+  async function togglePaid(index) {
+    const newData = sale.installmentsData.map((item, i) => i === index ? { ...item, paid: !item.paid } : item);
+    const newPaidCount = newData.filter((x) => x.paid).length;
+    await db.updateInstallmentsData(sale.id, newData);
+    setSales((prev) => prev.map((s) => s.id === sale.id ? { ...s, installmentsData: newData, paidInstallments: newPaidCount } : s));
+  }
+
+  // Legacy sequential pay/unpay
+  async function pay() {
+    const newPaid = Math.min(sale.installments, sale.paidInstallments + 1);
+    await db.registerPixInstallment(sale.id, newPaid);
+    setSales((prev) => prev.map((s) => s.id === sale.id ? { ...s, paidInstallments: newPaid } : s));
+    onClose();
+  }
+  async function unpay() {
+    const newPaid = Math.max(0, sale.paidInstallments - 1);
+    await db.registerPixInstallment(sale.id, newPaid);
+    setSales((prev) => prev.map((s) => s.id === sale.id ? { ...s, paidInstallments: newPaid } : s));
     onClose();
   }
 
@@ -1342,20 +1587,47 @@ function PixInstallmentModal({ sale, ctx, onClose }) {
       <div className="modal-header"><div className="modal-title">Pix Parcelado — {p?.name}</div><button className="btn btn-ghost" onClick={onClose}>✕</button></div>
       <div className="modal-body">
         <div className="stat-row"><span className="stat-label">Valor total</span><span className="stat-value">{fmt(sale.price)}</span></div>
-        <div className="stat-row"><span className="stat-label">Parcelas pagas</span><span className="stat-value">{sale.paidInstallments}/{sale.installments}</span></div>
-        <div className="stat-row"><span className="stat-label">Por parcela</span><span className="stat-value">{fmt(installmentValue)}</span></div>
-        <div className="stat-row"><span className="stat-label">Saldo pendente</span><span className="stat-value" style={{ color: T.danger }}>{fmt((sale.installments - sale.paidInstallments) * installmentValue)}</span></div>
+        <div className="stat-row"><span className="stat-label">Parcelas pagas</span><span className="stat-value">{totalPaid}/{sale.installments}</span></div>
+        <div className="stat-row"><span className="stat-label">Saldo pendente</span><span className="stat-value" style={{ color: T.danger }}>{fmt(pendingBalance)}</span></div>
         <hr className="divider" />
-        {Array.from({ length: sale.installments }, (_, i) => (
-          <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: `1px solid ${T.light}` }}>
-            <span>Parcela {i + 1}</span><span>{fmt(installmentValue)}</span>
-            <span className={`badge ${i < sale.paidInstallments ? "badge-ok" : "badge-warning"}`}>{i < sale.paidInstallments ? "✓ Pago" : "Pendente"}</span>
+        {entrada > 0 && (
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: `1px solid ${T.light}` }}>
+            <span>Entrada</span><span>{fmt(entrada)}</span>
+            <span className="badge badge-ok">✓ Pago</span>
           </div>
-        ))}
+        )}
+        {hasData ? (
+          sale.installmentsData.map((item, i) => (
+            <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${T.light}`, gap: 8 }}>
+              <span style={{ minWidth: 72 }}>Parcela {i + 1}</span>
+              <span style={{ fontSize: 12, color: T.grey, flex: 1 }}>{item.dueDate ? fmtDate(item.dueDate) : "—"}</span>
+              <span style={{ fontWeight: 600 }}>{fmt(+item.value)}</span>
+              <button
+                className={`btn btn-sm ${item.paid ? "btn-secondary" : "btn-primary"}`}
+                style={{ minWidth: 100 }}
+                onClick={() => togglePaid(i)}
+              >
+                {item.paid ? "✓ Pago" : "Registrar"}
+              </button>
+            </div>
+          ))
+        ) : (
+          Array.from({ length: sale.installments }, (_, i) => (
+            <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: `1px solid ${T.light}` }}>
+              <span>Parcela {i + 1}</span><span>{fmt(installmentValue)}</span>
+              <span className={`badge ${i < sale.paidInstallments ? "badge-ok" : "badge-warning"}`}>{i < sale.paidInstallments ? "✓ Pago" : "Pendente"}</span>
+            </div>
+          ))
+        )}
       </div>
       <div className="modal-footer">
         <button className="btn btn-secondary" onClick={onClose}>Fechar</button>
-        {sale.paidInstallments < sale.installments && <button className="btn btn-primary" onClick={pay}>✓ Registrar Pagamento</button>}
+        {!hasData && (
+          <>
+            {sale.paidInstallments > 0 && <button className="btn btn-secondary" onClick={unpay}>↩ Desmarcar</button>}
+            {sale.paidInstallments < sale.installments && <button className="btn btn-primary" onClick={pay}>✓ Registrar Pagamento</button>}
+          </>
+        )}
       </div>
     </>
   );
@@ -1368,6 +1640,10 @@ function PatientsPage({ ctx }) {
   const [selected, setSelected] = useState(null);
   const [sortField, setSortField] = useState("name");
   const [sortDir, setSortDir] = useState("asc");
+
+  function openEditPatient(p) {
+    setModal({ content: <PatientForm ctx={ctx} patient={p} onClose={() => setModal(null)} />, onClose: () => setModal(null) });
+  }
 
   function lastVisit(patientId) {
     const patSales = sales.filter((s) => s.patientId === patientId);
@@ -1513,7 +1789,12 @@ function PatientsPage({ ctx }) {
                     </td>
                     <td><span className={`badge badge-${p.status === "ok" ? "ok" : "late"}`}>{p.status === "ok" ? "Em dia" : "Pendente"}</span></td>
                     <td style={{ fontSize: 12, color: T.grey }}>{p.birthdate ? fmtDate(p.birthdate) : "—"}</td>
-                    <td><button className="btn btn-sm btn-secondary" onClick={() => setSelected(p)}>Ver histórico</button></td>
+                    <td>
+                      <div style={{ display: "flex", gap: 4 }}>
+                        <button className="btn btn-sm btn-secondary" onClick={() => openEditPatient(p)}>✏️ Editar</button>
+                        <button className="btn btn-sm btn-secondary" onClick={() => setSelected(p)}>Ver histórico</button>
+                      </div>
+                    </td>
                   </tr>
                 );
               })}
@@ -1525,17 +1806,32 @@ function PatientsPage({ ctx }) {
   );
 }
 
-function PatientForm({ ctx, onClose }) {
+function PatientForm({ ctx, patient, onClose }) {
   const { setPatients } = ctx;
-  const [form, setForm] = useState({ name: "", phone: "", email: "", birthdate: "", notes: "", status: "ok" });
-  function save() {
+  const editing = !!patient;
+  const [form, setForm] = useState({
+    name: patient?.name || "",
+    phone: patient?.phone || "",
+    email: patient?.email || "",
+    birthdate: patient?.birthdate || "",
+    notes: patient?.notes || "",
+    status: patient?.status || "ok",
+  });
+  async function save() {
     if (!form.name) return;
-    setPatients((prev) => [...prev, { id: Date.now(), ...form }]);
+    if (editing) {
+      const updated = { ...patient, ...form };
+      setPatients((prev) => prev.map((p) => p.id === patient.id ? updated : p));
+      await db.updatePatient(updated);
+    } else {
+      setPatients((prev) => [...prev, { id: Date.now(), ...form }]);
+      await db.createPatient({ id: Date.now(), ...form });
+    }
     onClose();
   }
   return (
     <>
-      <div className="modal-header"><div className="modal-title">Novo Paciente</div><button className="btn btn-ghost" onClick={onClose}>✕</button></div>
+      <div className="modal-header"><div className="modal-title">{editing ? "Editar Paciente" : "Novo Paciente"}</div><button className="btn btn-ghost" onClick={onClose}>✕</button></div>
       <div className="modal-body">
         <div className="form-group"><label>Nome Completo *</label><input className="form-control" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
         <div className="form-row form-row-2">
@@ -1547,7 +1843,7 @@ function PatientForm({ ctx, onClose }) {
       </div>
       <div className="modal-footer">
         <button className="btn btn-secondary" onClick={onClose}>Cancelar</button>
-        <button className="btn btn-primary" onClick={save}>Salvar</button>
+        <button className="btn btn-primary" onClick={save}>{editing ? "Salvar" : "Criar Paciente"}</button>
       </div>
     </>
   );
@@ -1559,6 +1855,7 @@ function StockPage({ ctx }) {
   const [tab, setTab] = useState("stock");
 
   function openNew() { setModal({ content: <ProductForm ctx={ctx} onClose={() => setModal(null)} />, onClose: () => setModal(null) }); }
+  function openEditProduct(product) { setModal({ content: <ProductForm ctx={ctx} product={product} onClose={() => setModal(null)} />, onClose: () => setModal(null) }); }
   function openEntry(product) { setModal({ content: <StockEntryModal product={product} ctx={ctx} onClose={() => setModal(null)} />, onClose: () => setModal(null) }); }
 
   return (
@@ -1590,7 +1887,12 @@ function StockPage({ ctx }) {
                       <td style={{ color: T.teal, fontWeight: 600 }}>{fmt(p.avgCost)}</td>
                       <td>{fmt(p.totalQty * p.avgCost)}</td>
                       <td>{low ? <span className="badge badge-late">Crítico</span> : warn ? <span className="badge badge-warning">Baixo</span> : <span className="badge badge-ok">OK</span>}</td>
-                      <td><button className="btn btn-sm btn-secondary" onClick={() => openEntry(p)}>+ Compra</button></td>
+                      <td>
+                        <div style={{ display: "flex", gap: 4 }}>
+                          <button className="btn btn-sm btn-secondary" onClick={() => openEditProduct(p)}>✏️</button>
+                          <button className="btn btn-sm btn-secondary" onClick={() => openEntry(p)}>+ Compra</button>
+                        </div>
+                      </td>
                     </tr>
                   );
                 })}
@@ -1628,17 +1930,30 @@ function StockPage({ ctx }) {
   );
 }
 
-function ProductForm({ ctx, onClose }) {
+function ProductForm({ ctx, product, onClose }) {
   const { setProducts } = ctx;
-  const [form, setForm] = useState({ name: "", unit: "unidade", totalQty: "", avgCost: "", minStock: "" });
-  function save() {
+  const editing = !!product;
+  const [form, setForm] = useState({
+    name: product?.name || "",
+    unit: product?.unit || "unidade",
+    totalQty: product?.totalQty || "",
+    avgCost: product?.avgCost || "",
+    minStock: product?.minStock || "",
+  });
+  async function save() {
     if (!form.name) return;
-    setProducts((prev) => [...prev, { id: Date.now(), name: form.name, unit: form.unit, totalQty: +form.totalQty || 0, avgCost: +form.avgCost || 0, minStock: +form.minStock || 0 }]);
+    if (editing) {
+      const updated = { ...product, name: form.name, unit: form.unit, minStock: +form.minStock || 0 };
+      setProducts((prev) => prev.map((p) => p.id === product.id ? updated : p));
+      await db.updateProduct(updated);
+    } else {
+      setProducts((prev) => [...prev, { id: Date.now(), name: form.name, unit: form.unit, totalQty: +form.totalQty || 0, avgCost: +form.avgCost || 0, minStock: +form.minStock || 0 }]);
+    }
     onClose();
   }
   return (
     <>
-      <div className="modal-header"><div className="modal-title">Novo Produto</div><button className="btn btn-ghost" onClick={onClose}>✕</button></div>
+      <div className="modal-header"><div className="modal-title">{editing ? "Editar Produto" : "Novo Produto"}</div><button className="btn btn-ghost" onClick={onClose}>✕</button></div>
       <div className="modal-body">
         <div className="form-row form-row-2">
           <div className="form-group"><label>Nome</label><input className="form-control" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
@@ -1649,15 +1964,19 @@ function ProductForm({ ctx, onClose }) {
             </select>
           </div>
         </div>
-        <div className="form-row form-row-3">
-          <div className="form-group"><label>Qtd. Inicial</label><input type="number" className="form-control" value={form.totalQty} onChange={(e) => setForm({ ...form, totalQty: e.target.value })} /></div>
-          <div className="form-group"><label>Custo Médio (R$/{form.unit})</label><input type="number" step="0.01" className="form-control" value={form.avgCost} onChange={(e) => setForm({ ...form, avgCost: e.target.value })} /></div>
-          <div className="form-group"><label>Estoque Mínimo</label><input type="number" className="form-control" value={form.minStock} onChange={(e) => setForm({ ...form, minStock: e.target.value })} /></div>
-        </div>
+        {editing ? (
+          <div className="alert alert-info" style={{ display: "block", marginBottom: 8 }}>ℹ️ Quantidade e custo médio são gerenciados pelas entradas de estoque.</div>
+        ) : (
+          <div className="form-row form-row-2">
+            <div className="form-group"><label>Qtd. Inicial</label><input type="number" className="form-control" value={form.totalQty} onChange={(e) => setForm({ ...form, totalQty: e.target.value })} /></div>
+            <div className="form-group"><label>Custo Médio (R$/{form.unit})</label><input type="number" step="0.01" className="form-control" value={form.avgCost} onChange={(e) => setForm({ ...form, avgCost: e.target.value })} /></div>
+          </div>
+        )}
+        <div className="form-group"><label>Estoque Mínimo</label><input type="number" className="form-control" value={form.minStock} onChange={(e) => setForm({ ...form, minStock: e.target.value })} /></div>
       </div>
       <div className="modal-footer">
         <button className="btn btn-secondary" onClick={onClose}>Cancelar</button>
-        <button className="btn btn-primary" onClick={save}>Salvar</button>
+        <button className="btn btn-primary" onClick={save}>{editing ? "Salvar" : "Criar Produto"}</button>
       </div>
     </>
   );
@@ -1888,7 +2207,7 @@ function MonthlyChart({ sales, costs }) {
   const [fromMonth, setFromMonth] = useState(defaultFrom);
   const [toMonth, setToMonth] = useState(defaultTo);
   const [hovered, setHovered] = useState(null);
-  const [visibleLines, setVisibleLines] = useState({ revenue: true, netProfit: true, opCosts: true, clients: true });
+  const [visibleLines, setVisibleLines] = useState({ revenue: true, netProfit: true, opCosts: true, clients: true, avgTicket: false });
 
   // Build months in selected range
   const months = [];
@@ -1906,7 +2225,8 @@ function MonthlyChart({ sales, costs }) {
     const opCosts = mCosts.reduce((s, c) => s + c.amount, 0);
     const netProfit = revenue - productCost - fees - opCosts;
     const clients = new Set(mSales.map((s) => s.patientId)).size;
-    months.push({ key, label, revenue, netProfit, opCosts: opCosts + productCost + fees, clients });
+    const avgTicket = mSales.length > 0 ? revenue / mSales.length : 0;
+    months.push({ key, label, revenue, netProfit, opCosts: opCosts + productCost + fees, clients, avgTicket });
     cm++;
     if (cm > 12) { cm = 1; cy++; }
   }
@@ -1927,6 +2247,7 @@ function MonthlyChart({ sales, costs }) {
     { key: "netProfit", label: "Lucro Líquido", color: T.success },
     { key: "opCosts", label: "Despesas", color: T.danger },
     { key: "clients", label: "Clientes", color: T.warning, isClients: true },
+    { key: "avgTicket", label: "Ticket Médio", color: "#f59e0b" },
   ];
 
   return (
@@ -1984,6 +2305,9 @@ function MonthlyChart({ sales, costs }) {
                 {visibleLines.netProfit && (
                   <div style={{ width: 12, background: m.netProfit >= 0 ? T.success : T.danger, borderRadius: "3px 3px 0 0", height: pct(Math.abs(m.netProfit)), opacity: m.netProfit >= 0 ? 0.9 : 0.4, transition: "height 0.3s", border: m.netProfit < 0 ? `2px dashed ${T.danger}` : "none" }} title={`Lucro: ${fmt(m.netProfit)}`} />
                 )}
+                {visibleLines.avgTicket && (
+                  <div style={{ width: 12, background: "#f59e0b", borderRadius: "3px 3px 0 0", height: pct(m.avgTicket || 0), opacity: 0.8, transition: "height 0.3s" }} title={`Ticket Médio: ${fmt(m.avgTicket)}`} />
+                )}
               </div>
 
               {/* Clients dot + label */}
@@ -1994,16 +2318,26 @@ function MonthlyChart({ sales, costs }) {
                 </>
               )}
 
-              {/* Tooltip */}
-              {hovered === i && (
-                <div style={{ position: "absolute", bottom: "100%", left: "50%", transform: "translateX(-50%)", background: T.dark, color: "white", borderRadius: 8, padding: "8px 12px", fontSize: 12, whiteSpace: "nowrap", zIndex: 10, marginBottom: 6, lineHeight: 1.7, boxShadow: "0 4px 12px rgba(0,0,0,0.2)" }}>
-                  <div style={{ fontWeight: 700, marginBottom: 4 }}>{m.label.toUpperCase()}</div>
-                  {visibleLines.revenue && <div>💰 Faturamento: <strong>{fmt(m.revenue)}</strong></div>}
-                  {visibleLines.netProfit && <div style={{ color: m.netProfit >= 0 ? "#6FCF97" : "#EB5757" }}>✅ Lucro: <strong>{fmt(m.netProfit)}</strong></div>}
-                  {visibleLines.opCosts && <div style={{ color: "#EB8057" }}>📦 Despesas: <strong>{fmt(m.opCosts)}</strong></div>}
-                  {visibleLines.clients && <div style={{ color: "#F2C94C" }}>👤 Clientes: <strong>{m.clients}</strong></div>}
-                </div>
-              )}
+              {/* Tooltip — positioned above short bars, inside chart for tall bars */}
+              {hovered === i && (() => {
+                const maxBarH = Math.max(
+                  visibleLines.revenue ? pct(m.revenue) : 0,
+                  visibleLines.opCosts ? pct(m.opCosts) : 0,
+                  visibleLines.netProfit ? pct(Math.abs(m.netProfit)) : 0,
+                  visibleLines.avgTicket ? pct(m.avgTicket || 0) : 0,
+                );
+                const tooltipInside = maxBarH > chartH * 0.6;
+                return (
+                  <div style={{ position: "absolute", ...(tooltipInside ? { top: 4, bottom: "auto" } : { bottom: "calc(100% + 6px)", top: "auto" }), left: "50%", transform: "translateX(-50%)", background: T.dark, color: "white", borderRadius: 8, padding: "8px 12px", fontSize: 12, whiteSpace: "nowrap", zIndex: 10, lineHeight: 1.7, boxShadow: "0 4px 12px rgba(0,0,0,0.2)" }}>
+                    <div style={{ fontWeight: 700, marginBottom: 4 }}>{m.label.toUpperCase()}</div>
+                    {visibleLines.revenue && <div>💰 Faturamento: <strong>{fmt(m.revenue)}</strong></div>}
+                    {visibleLines.netProfit && <div style={{ color: m.netProfit >= 0 ? "#6FCF97" : "#EB5757" }}>✅ Lucro: <strong>{fmt(m.netProfit)}</strong></div>}
+                    {visibleLines.opCosts && <div style={{ color: "#EB8057" }}>📦 Despesas: <strong>{fmt(m.opCosts)}</strong></div>}
+                    {visibleLines.clients && <div style={{ color: "#F2C94C" }}>👤 Clientes: <strong>{m.clients}</strong></div>}
+                    {visibleLines.avgTicket && <div style={{ color: "#f59e0b" }}>🎯 Ticket Médio: <strong>{fmt(m.avgTicket)}</strong></div>}
+                  </div>
+                );
+              })()}
             </div>
           ))}
         </div>
@@ -2021,17 +2355,19 @@ function MonthlyChart({ sales, costs }) {
         const active = display.filter((m) => m.revenue > 0 || m.opCosts > 0);
         if (active.length === 0) return null;
         const n = active.length;
-        const avgRevenue = active.reduce((s, m) => s + m.revenue, 0) / n;
-        const avgProfit  = active.reduce((s, m) => s + m.netProfit, 0) / n;
-        const avgCosts   = active.reduce((s, m) => s + m.opCosts, 0) / n;
-        const avgClients = active.reduce((s, m) => s + m.clients, 0) / n;
+        const avgRevenue    = active.reduce((s, m) => s + m.revenue, 0) / n;
+        const avgProfit     = active.reduce((s, m) => s + m.netProfit, 0) / n;
+        const avgCosts      = active.reduce((s, m) => s + m.opCosts, 0) / n;
+        const avgClients    = active.reduce((s, m) => s + m.clients, 0) / n;
+        const avgTicketAvg  = active.reduce((s, m) => s + (m.avgTicket || 0), 0) / n;
         return (
           <div style={{ display: "flex", gap: 20, marginTop: 12, paddingTop: 12, borderTop: `1px solid ${T.light}`, flexWrap: "wrap", alignItems: "center" }}>
             <span style={{ fontSize: 11, color: T.grey, fontWeight: 600 }}>Média / mês:</span>
-            {visibleLines.revenue  && <span style={{ color: T.blue, fontSize: 12 }}>💰 {fmt(avgRevenue)}</span>}
+            {visibleLines.revenue   && <span style={{ color: T.blue, fontSize: 12 }}>💰 {fmt(avgRevenue)}</span>}
             {visibleLines.netProfit && <span style={{ color: avgProfit >= 0 ? T.success : T.danger, fontSize: 12 }}>✅ {fmt(avgProfit)}</span>}
-            {visibleLines.opCosts  && <span style={{ color: T.danger, fontSize: 12 }}>📦 {fmt(avgCosts)}</span>}
-            {visibleLines.clients  && <span style={{ color: T.warning, fontSize: 12 }}>👤 {avgClients % 1 === 0 ? avgClients : avgClients.toFixed(1)} clientes</span>}
+            {visibleLines.opCosts   && <span style={{ color: T.danger, fontSize: 12 }}>📦 {fmt(avgCosts)}</span>}
+            {visibleLines.clients   && <span style={{ color: T.warning, fontSize: 12 }}>👤 {avgClients % 1 === 0 ? avgClients : avgClients.toFixed(1)} clientes</span>}
+            {visibleLines.avgTicket && <span style={{ color: "#f59e0b", fontSize: 12 }}>🎯 {fmt(avgTicketAvg)}</span>}
           </div>
         );
       })()}
@@ -2080,6 +2416,7 @@ function FinancePage({ ctx }) {
         <MetricCard icon="📦" title="Custo Produtos" value={fmt(totalProductCost)} sub="custo médio" color={T.danger} />
         <MetricCard icon="✅" title="Lucro Bruto" value={fmt(grossProfit)} sub="após produtos e taxas" color={grossProfit >= 0 ? T.success : T.danger} />
         <MetricCard icon="🏆" title="Lucro Líquido" value={fmt(netProfit)} sub="após operacional" color={netProfit >= 0 ? T.success : T.danger} />
+        <MetricCard icon="🎯" title="Ticket Médio" value={fmt(avgTicket)} sub={`${mSales.length} atendimentos no mês`} color="#f59e0b" />
       </div>
       <div className="grid-2">
         <div className="card">
@@ -2129,6 +2466,81 @@ function FinancePage({ ctx }) {
             </div>
           ))}
           {mCosts.length > 0 && <div className="stat-row" style={{ borderTop: `2px solid ${T.dark}`, paddingTop: 10 }}><span style={{ fontWeight: 700 }}>TOTAL</span><span style={{ fontWeight: 700, color: T.danger }}>{fmt(totalCosts)}</span></div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── LOCATIONS ─────────────────────────────────────────────────────────────────
+function LocationsPage({ ctx }) {
+  const { locations, setLocations } = ctx;
+  const [newName, setNewName] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function add() {
+    if (!newName.trim()) return;
+    setSaving(true);
+    try {
+      const created = await db.createLocation(newName.trim());
+      setLocations((prev) => sortByName([...prev, created]));
+      setNewName("");
+    } catch (e) {
+      console.error("Erro ao criar local:", e);
+    }
+    setSaving(false);
+  }
+
+  async function remove(id) {
+    try {
+      await db.deleteLocation(id);
+      setLocations((prev) => prev.filter((l) => l.id !== id));
+    } catch (e) {
+      console.error("Erro ao remover local:", e);
+    }
+  }
+
+  return (
+    <div>
+      <div className="section-header">
+        <div>
+          <div className="section-title">📍 Locais de Atendimento</div>
+          <div className="section-sub">Gerencie os locais disponíveis em agendamentos e vendas</div>
+        </div>
+      </div>
+      <div className="card">
+        <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
+          <input
+            className="form-control"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            placeholder="Nome do novo local..."
+            onKeyDown={(e) => e.key === "Enter" && add()}
+            style={{ flex: 1 }}
+          />
+          <button className="btn btn-primary" onClick={add} disabled={saving || !newName.trim()}>
+            {saving ? "..." : "+ Adicionar"}
+          </button>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Local</th><th style={{ width: 80 }}>Ação</th></tr>
+            </thead>
+            <tbody>
+              {locations.length === 0 && (
+                <tr><td colSpan={2}><div className="empty">Nenhum local cadastrado</div></td></tr>
+              )}
+              {locations.map((l) => (
+                <tr key={l.id}>
+                  <td><strong>{l.name}</strong></td>
+                  <td>
+                    <button className="btn btn-sm btn-danger" onClick={() => remove(l.id)} title="Remover">🗑</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>

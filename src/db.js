@@ -176,6 +176,7 @@ export async function fetchSales() {
     downPaymentAmount: s.down_payment_amount || 0,
     downPaymentMethod: s.down_payment_method || "",
     notes: s.notes || "",
+    installmentsData: s.installments_data || [],
     products: (s.sale_products || []).map((sp) => ({
       productId: sp.product_id, qty: sp.qty,
       costAtSale: sp.cost_at_sale, sessionType: sp.session_type,
@@ -195,6 +196,7 @@ export async function createSale(sale, products) {
     down_payment_amount: sale.downPaymentAmount || 0,
     down_payment_method: sale.downPaymentMethod || "",
     notes: sale.notes || "",
+    installments_data: sale.installmentsData || [],
   }).select().single();
   if (error) throw error;
 
@@ -215,7 +217,65 @@ export async function deleteSale(id) {
   if (error) throw error;
 }
 
+export async function updateProduct(p) {
+  const { error } = await supabase.from("products")
+    .update({ name: p.name, unit: p.unit, min_stock: p.minStock })
+    .eq("id", p.id);
+  if (error) throw error;
+}
+
+export async function updateInstallmentsData(saleId, installmentsData) {
+  const { error } = await supabase.from("sales")
+    .update({ installments_data: installmentsData })
+    .eq("id", saleId);
+  if (error) throw error;
+}
+
+export async function updateSale(sale, products) {
+  const { error } = await supabase.from("sales").update({
+    patient_id: sale.patientId,
+    service_id: sale.serviceId,
+    appointment_id: sale.appointmentId || null,
+    professional: sale.professional,
+    date: sale.date,
+    price: sale.price,
+    payment_method: sale.paymentMethod,
+    card_brand: sale.cardBrand || "",
+    installments: sale.installments,
+    paid_installments: sale.paidInstallments,
+    credit_fee_rate: sale.creditFeeRate,
+    net_amount: sale.netAmount,
+    location_id: sale.locationId || null,
+    down_payment_amount: sale.downPaymentAmount || 0,
+    down_payment_method: sale.downPaymentMethod || "",
+    notes: sale.notes || "",
+    installments_data: sale.installmentsData || [],
+  }).eq("id", sale.id);
+  if (error) throw error;
+  const { error: delErr } = await supabase.from("sale_products").delete().eq("sale_id", sale.id);
+  if (delErr) throw delErr;
+  if (products?.length > 0) {
+    const { error: spErr } = await supabase.from("sale_products").insert(
+      products.map((p) => ({ sale_id: sale.id, product_id: p.productId,
+        qty: p.qty, cost_at_sale: p.costAtSale, session_type: p.sessionType }))
+    );
+    if (spErr) throw spErr;
+  }
+}
+
 export async function registerPixInstallment(id, paidInstallments) {
   const { error } = await supabase.from("sales").update({ paid_installments: paidInstallments }).eq("id", id);
+  if (error) throw error;
+}
+
+// ── locations CRUD ────────────────────────────────────────────────────────────
+export async function createLocation(name) {
+  const { data, error } = await supabase.from("locations").insert({ name }).select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteLocation(id) {
+  const { error } = await supabase.from("locations").delete().eq("id", id);
   if (error) throw error;
 }
