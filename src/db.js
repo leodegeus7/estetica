@@ -138,6 +138,8 @@ export async function fetchAppointments() {
     id: a.id, patientId: a.patient_id, serviceId: a.service_id,
     date: a.date, time: a.time, status: a.status, saleId: a.sale_id,
     location: a.location || "Clínica",
+    duration: a.duration || 60,
+    appointmentType: a.appointment_type || "consulta",
   }));
 }
 
@@ -146,9 +148,16 @@ export async function createAppointment(a) {
     patient_id: a.patientId, service_id: a.serviceId,
     date: a.date, time: a.time, status: "scheduled", sale_id: null,
     location: a.location || "Clínica",
+    duration: a.duration || 60,
+    appointment_type: a.appointmentType || "consulta",
   }).select().single();
   if (error) throw error;
-  return { id: data.id, patientId: data.patient_id, serviceId: data.service_id, date: data.date, time: data.time, status: data.status, saleId: data.sale_id, location: data.location };
+  return {
+    id: data.id, patientId: data.patient_id, serviceId: data.service_id,
+    date: data.date, time: data.time, status: data.status, saleId: data.sale_id,
+    location: data.location, duration: data.duration || 60,
+    appointmentType: data.appointment_type || "consulta",
+  };
 }
 
 export async function updateAppointmentStatus(id, status, saleId) {
@@ -177,6 +186,8 @@ export async function fetchSales() {
     downPaymentMethod: s.down_payment_method || "",
     notes: s.notes || "",
     installmentsData: s.installments_data || [],
+    quotationId: s.quotation_id || null,
+    saleServices: s.sale_services || [],
     products: (s.sale_products || []).map((sp) => ({
       productId: sp.product_id, qty: sp.qty,
       costAtSale: sp.cost_at_sale, sessionType: sp.session_type,
@@ -197,6 +208,8 @@ export async function createSale(sale, products) {
     down_payment_method: sale.downPaymentMethod || "",
     notes: sale.notes || "",
     installments_data: sale.installmentsData || [],
+    quotation_id: sale.quotationId || null,
+    sale_services: sale.saleServices || null,
   }).select().single();
   if (error) throw error;
 
@@ -250,6 +263,8 @@ export async function updateSale(sale, products) {
     down_payment_method: sale.downPaymentMethod || "",
     notes: sale.notes || "",
     installments_data: sale.installmentsData || [],
+    quotation_id: sale.quotationId || null,
+    sale_services: sale.saleServices || null,
   }).eq("id", sale.id);
   if (error) throw error;
   const { error: delErr } = await supabase.from("sale_products").delete().eq("sale_id", sale.id);
@@ -277,5 +292,129 @@ export async function createLocation(name) {
 
 export async function deleteLocation(id) {
   const { error } = await supabase.from("locations").delete().eq("id", id);
+  if (error) throw error;
+}
+
+// ── quotations ────────────────────────────────────────────────────────────────
+function mapQuotation(q) {
+  return {
+    id: q.id,
+    patientId: q.patient_id,
+    appointmentId: q.appointment_id || null,
+    professional: q.professional || "",
+    date: q.date,
+    validUntil: q.valid_until || null,
+    location: q.location || "",
+    status: q.status || "pending",
+    total: q.total || 0,
+    discount: q.discount || 0,
+    totalWithDiscount: q.total_with_discount || 0,
+    notes: q.notes || "",
+    createdAt: q.created_at,
+    items: (q.quotation_items || [])
+      .sort((a, b) => a.sort_order - b.sort_order)
+      .map((it) => ({
+        id: it.id,
+        serviceId: it.service_id || null,
+        serviceName: it.service_name,
+        price: it.price,
+        finalPrice: it.final_price,
+        note: it.note || "",
+        sortOrder: it.sort_order,
+      })),
+  };
+}
+
+export async function fetchQuotations() {
+  const { data, error } = await supabase
+    .from("quotations")
+    .select("*, quotation_items(*)")
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return data.map(mapQuotation);
+}
+
+export async function createQuotation(q, items) {
+  const { data, error } = await supabase.from("quotations").insert({
+    patient_id: q.patientId,
+    appointment_id: q.appointmentId || null,
+    professional: q.professional || "",
+    date: q.date,
+    valid_until: q.validUntil || null,
+    location: q.location || "",
+    status: "pending",
+    total: q.total,
+    discount: q.discount || 0,
+    total_with_discount: q.totalWithDiscount,
+    notes: q.notes || "",
+  }).select().single();
+  if (error) throw error;
+
+  if (items && items.length > 0) {
+    const { error: itErr } = await supabase.from("quotation_items").insert(
+      items.map((it, i) => ({
+        quotation_id: data.id,
+        service_id: it.serviceId || null,
+        service_name: it.serviceName,
+        price: it.price,
+        final_price: it.finalPrice,
+        note: it.note || "",
+        sort_order: i,
+      }))
+    );
+    if (itErr) throw itErr;
+  }
+
+  const { data: full, error: fetchErr } = await supabase
+    .from("quotations")
+    .select("*, quotation_items(*)")
+    .eq("id", data.id)
+    .single();
+  if (fetchErr) throw fetchErr;
+  return mapQuotation(full);
+}
+
+export async function updateQuotation(q, items) {
+  const { error } = await supabase.from("quotations").update({
+    patient_id: q.patientId,
+    appointment_id: q.appointmentId || null,
+    professional: q.professional || "",
+    date: q.date,
+    valid_until: q.validUntil || null,
+    location: q.location || "",
+    total: q.total,
+    discount: q.discount || 0,
+    total_with_discount: q.totalWithDiscount,
+    notes: q.notes || "",
+  }).eq("id", q.id);
+  if (error) throw error;
+
+  await supabase.from("quotation_items").delete().eq("quotation_id", q.id);
+  if (items && items.length > 0) {
+    const { error: itErr } = await supabase.from("quotation_items").insert(
+      items.map((it, i) => ({
+        quotation_id: q.id,
+        service_id: it.serviceId || null,
+        service_name: it.serviceName,
+        price: it.price,
+        final_price: it.finalPrice,
+        note: it.note || "",
+        sort_order: i,
+      }))
+    );
+    if (itErr) throw itErr;
+  }
+
+  const { data: full, error: fetchErr } = await supabase
+    .from("quotations")
+    .select("*, quotation_items(*)")
+    .eq("id", q.id)
+    .single();
+  if (fetchErr) throw fetchErr;
+  return mapQuotation(full);
+}
+
+export async function updateQuotationStatus(id, status) {
+  const { error } = await supabase.from("quotations").update({ status }).eq("id", id);
   if (error) throw error;
 }

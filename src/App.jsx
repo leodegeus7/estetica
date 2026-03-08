@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import jsPDF from "jspdf";
 import * as db from "./db";
 import { supabase } from "./supabase";
 import { subscribeToPush } from "./usePushNotifications";
@@ -425,6 +426,7 @@ function MainApp({ user, onLogout }) {
   const [sales, setSales] = useState([]);
   const [costs, setCosts] = useState([]);
   const [appointments, setAppointments] = useState([]);
+  const [quotations, setQuotations] = useState([]);
   const [modal, setModal] = useState(null);
   const [pendingReturn, setPendingReturn] = useState(null);
   const [dataLoading, setDataLoading] = useState(true);
@@ -439,7 +441,8 @@ function MainApp({ user, onLogout }) {
       db.fetchSales(),
       db.fetchCosts(),
       db.fetchAppointments(),
-    ]).then(([locs, prods, stock, svcs, pats, sls, cts, appts]) => {
+      db.fetchQuotations(),
+    ]).then(([locs, prods, stock, svcs, pats, sls, cts, appts, quots]) => {
       setLocations(locs.length > 0 ? locs : INIT_LOCATIONS);
       setProducts(prods);
       setStockEntries(stock);
@@ -448,6 +451,7 @@ function MainApp({ user, onLogout }) {
       setSales(sls);
       setCosts(cts);
       setAppointments(appts);
+      setQuotations(quots);
       setDataLoading(false);
     }).catch((err) => {
       console.error("Erro ao carregar dados:", err);
@@ -465,6 +469,7 @@ function MainApp({ user, onLogout }) {
     services, setServices, patients, setPatients, sales, setSales,
     costs, setCosts, appointments, setAppointments, modal, setModal,
     pendingReturn, setPendingReturn, setPage, locations, setLocations,
+    quotations, setQuotations,
     db,
   };
 
@@ -487,6 +492,7 @@ function MainApp({ user, onLogout }) {
     { id: "dashboard", icon: "🏠", label: "Dashboard" },
     { id: "appointments", icon: "📅", label: "Agenda", group: "op" },
     { id: "sales", icon: "💳", label: "Vendas", group: "op" },
+    { id: "quotations", icon: "📋", label: "Orçamentos", group: "op" },
     { id: "patients", icon: "👤", label: "Pacientes", group: "op" },
     { id: "stock", icon: "📦", label: "Estoque", group: "cad" },
     { id: "services", icon: "💉", label: "Procedimentos", group: "cad" },
@@ -497,7 +503,7 @@ function MainApp({ user, onLogout }) {
   const groups = {};
   NAV.forEach((n) => { const g = n.group || "main"; (groups[g] = groups[g] || []).push(n); });
 
-  const PAGES = { dashboard: DashboardPage, appointments: AppointmentsPage, sales: SalesPage, patients: PatientsPage, stock: StockPage, services: ServicesPage, costs: CostsPage, locations: LocationsPage, finance: FinancePage };
+  const PAGES = { dashboard: DashboardPage, appointments: AppointmentsPage, sales: SalesPage, quotations: QuotationsPage, patients: PatientsPage, stock: StockPage, services: ServicesPage, costs: CostsPage, locations: LocationsPage, finance: FinancePage };
   const PageComponent = PAGES[page] || DashboardPage;
 
   // Bottom nav: 4 pinned + "Mais" drawer
@@ -873,8 +879,12 @@ function AppointmentsPage({ ctx }) {
   function openSale(appt) {
     setModal({ lg: true, content: <SaleForm ctx={ctx} appointmentId={appt.id} prefillPatient={appt.patientId} prefillService={appt.serviceId} prefillLocation={appt.location} onClose={() => setModal(null)} />, onClose: () => setModal(null) });
   }
+  function openQuotation(appt) {
+    setModal({ lg: true, content: <QuotationForm ctx={ctx} prefill={{ patientId: appt.patientId, appointmentId: appt.id, location: appt.location }} onClose={() => setModal(null)} />, onClose: () => setModal(null) });
+  }
   function cancel(id) {
     setAppointments((prev) => prev.map((a) => a.id === id ? { ...a, status: "cancelled" } : a));
+    db.cancelAppointment(id).catch(console.error);
   }
 
   const list = (grouped[tab] || []).sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
@@ -892,9 +902,9 @@ function AppointmentsPage({ ctx }) {
       <div className="card">
         <div className="table-wrap">
           <table>
-            <thead><tr><th>Data</th><th>Hora</th><th>Paciente</th><th>Procedimento</th><th>Status</th><th>Ações</th></tr></thead>
+            <thead><tr><th>Data</th><th>Hora</th><th>Paciente</th><th>Tipo</th><th>Procedimento</th><th>Dur.</th><th>Status</th><th>Ações</th></tr></thead>
             <tbody>
-              {list.length === 0 && <tr><td colSpan={6}><div className="empty">Nenhum agendamento</div></td></tr>}
+              {list.length === 0 && <tr><td colSpan={8}><div className="empty">Nenhum agendamento</div></td></tr>}
               {list.map((a) => {
                 const p = patients.find((x) => x.id === a.patientId);
                 const s = services.find((x) => x.id === a.serviceId);
@@ -903,13 +913,16 @@ function AppointmentsPage({ ctx }) {
                     <td>{fmtDate(a.date)}</td>
                     <td><strong>{a.time}</strong></td>
                     <td>{p?.name}</td>
+                    <td><span className={`badge ${a.appointmentType === "avaliacao" ? "badge-warning" : "badge-scheduled"}`}>{a.appointmentType === "avaliacao" ? "Avaliação" : "Consulta"}</span></td>
                     <td>{s?.name} {s?.needsReturn && <span className="return-badge">🔄 {s.returnType}</span>}</td>
+                    <td style={{ color: T.grey, fontSize: 12 }}>{a.duration || 60}min</td>
                     <td><span className={`badge badge-${a.status}`}>{a.status === "scheduled" ? "Agendado" : a.status === "done" ? "Realizado" : "Cancelado"}</span></td>
                     <td>
                       <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                         {a.status === "scheduled" && (
                           <>
-                            <button className="btn btn-sm btn-success" onClick={() => openSale(a)}>💰 Realizar Venda</button>
+                            <button className="btn btn-sm btn-success" onClick={() => openSale(a)}>💰 Venda</button>
+                            <button className="btn btn-sm btn-secondary" onClick={() => openQuotation(a)}>📋 Orçamento</button>
                             <button className="btn btn-sm btn-danger" onClick={() => cancel(a.id)}>✕</button>
                           </>
                         )}
@@ -929,10 +942,8 @@ function AppointmentsPage({ ctx }) {
 
 // ─── APPOINTMENT FORM ─────────────────────────────────────────────────────────
 function AppointmentForm({ ctx, onClose, prefill = {} }) {
-  // KEY FIX: patients comes from ctx directly, not destructured once
   const { services, setAppointments, locations } = ctx;
   const defaultLocation = (locations || []).find((l) => l.name === "Clínica")?.name || (locations?.[0]?.name || "Clínica");
-  // Use local patients state that stays in sync
   const [localPatients, setLocalPatients] = useState(ctx.patients);
   const [form, setForm] = useState({
     patientId: prefill.patientId || "",
@@ -941,9 +952,23 @@ function AppointmentForm({ ctx, onClose, prefill = {} }) {
     time: "09:00",
     location: prefill.location || defaultLocation,
     note: prefill.note || "",
+    appointmentType: "consulta",
+    duration: 60,
   });
   const [showNew, setShowNew] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [np, setNp] = useState({ name: "", phone: "", email: "", birthdate: "", notes: "" });
+
+  function handleServiceChange(serviceId) {
+    const svc = services.find((s) => String(s.id) === String(serviceId));
+    const dur = form.appointmentType === "avaliacao" ? 60 : (svc?.duration || 60);
+    setForm((f) => ({ ...f, serviceId, duration: dur }));
+  }
+
+  function handleTypeChange(appointmentType) {
+    const dur = appointmentType === "avaliacao" ? 60 : (services.find((s) => String(s.id) === String(form.serviceId))?.duration || form.duration);
+    setForm((f) => ({ ...f, appointmentType, duration: dur }));
+  }
 
   function saveNewPatient() {
     if (!np.name) return;
@@ -955,10 +980,26 @@ function AppointmentForm({ ctx, onClose, prefill = {} }) {
     setNp({ name: "", phone: "", email: "", birthdate: "", notes: "" });
   }
 
-  function save() {
+  async function save() {
     if (!form.patientId || !form.serviceId) return;
-    setAppointments((prev) => [...prev, { id: Date.now(), ...form, patientId: +form.patientId, serviceId: +form.serviceId, status: "scheduled", saleId: null }]);
-    onClose();
+    setSaving(true);
+    try {
+      const created = await db.createAppointment({
+        patientId: form.patientId,
+        serviceId: form.serviceId,
+        date: form.date,
+        time: form.time,
+        location: form.location,
+        duration: form.duration,
+        appointmentType: form.appointmentType,
+      });
+      setAppointments((prev) => [...prev, created]);
+      onClose();
+    } catch (e) {
+      console.error("Erro ao agendar:", e);
+    } finally {
+      setSaving(false);
+    }
   }
 
   const sortedPatients = sortByName(localPatients);
@@ -1004,12 +1045,26 @@ function AppointmentForm({ ctx, onClose, prefill = {} }) {
             </div>
           </div>
         )}
+        <div className="form-row form-row-2">
+          <div className="form-group">
+            <label>Tipo</label>
+            <select className="form-control" value={form.appointmentType} onChange={(e) => handleTypeChange(e.target.value)}>
+              <option value="consulta">Consulta</option>
+              <option value="avaliacao">Avaliação</option>
+            </select>
+          </div>
+          <div className="form-group">
+            <label>Duração (min)</label>
+            <input type="number" className="form-control" min={5} step={5} value={form.duration}
+              onChange={(e) => setForm({ ...form, duration: +e.target.value })} />
+          </div>
+        </div>
         <div className="form-group">
           <label>Procedimento</label>
           <SearchSelect
             options={sortedServices.map((s) => ({ value: s.id, label: s.name }))}
             value={form.serviceId}
-            onChange={(v) => setForm({ ...form, serviceId: v })}
+            onChange={handleServiceChange}
             placeholder="Buscar procedimento…"
           />
         </div>
@@ -1027,7 +1082,7 @@ function AppointmentForm({ ctx, onClose, prefill = {} }) {
       </div>
       <div className="modal-footer">
         <button className="btn btn-secondary" onClick={onClose}>Cancelar</button>
-        <button className="btn btn-primary" onClick={save}>Agendar</button>
+        <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? "Agendando…" : "Agendar"}</button>
       </div>
     </>
   );
@@ -1116,7 +1171,16 @@ function SalesPage({ ctx }) {
                   <tr key={s.id}>
                     <td style={{ whiteSpace: "nowrap" }}>{fmtDate(s.date)}</td>
                     <td>{p?.name}</td>
-                    <td>{sv?.name}</td>
+                    <td>
+                      {s.saleServices?.length > 0
+                        ? <span style={{ fontSize: 12 }}>{s.saleServices.map((it) => it.serviceName).join(", ")}</span>
+                        : sv?.name}
+                      {s.quotationId && (
+                        <span className="badge badge-info" style={{ marginLeft: 4, fontSize: 10, cursor: "pointer" }}
+                          onClick={() => { const q = ctx.quotations?.find((x) => x.id === s.quotationId); if (q) ctx.setModal({ lg: true, content: <QuotationDetailModal quot={q} ctx={ctx} onClose={() => ctx.setModal(null)} />, onClose: () => ctx.setModal(null) }); }}
+                        >📋 Orç.</span>
+                      )}
+                    </td>
                     <td style={{ fontSize: 12 }}>
                       {s.products.map((sp, i) => {
                         const prod = ctx.products.find((x) => x.id === sp.productId);
@@ -1160,17 +1224,26 @@ function SalesPage({ ctx }) {
 }
 
 // ─── SALE FORM ────────────────────────────────────────────────────────────────
-function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillLocation, editSale, onClose }) {
+function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillLocation, editSale, onClose, quotationId, quotationItems }) {
   const { patients, setPatients, services, products, setSales, setProducts, setAppointments, setPendingReturn, locations } = ctx;
   const defaultLocation = prefillLocation || (locations || []).find((l) => l.name === "Clínica")?.name || (locations?.[0]?.name || "Clínica");
   const editing = !!editSale;
+  const fromQuotation = !editing && Array.isArray(quotationItems) && quotationItems.length > 0;
+
+  const [saleServices, setSaleServices] = useState(
+    fromQuotation ? quotationItems.map((it) => ({ ...it, included: true })) : []
+  );
+
+  const quotationTotal = fromQuotation
+    ? saleServices.filter((i) => i.included).reduce((s, i) => s + (+i.finalPrice || 0), 0)
+    : 0;
 
   const [form, setForm] = useState({
     patientId: editSale ? String(editSale.patientId) : (prefillPatient || ""),
-    serviceId: editSale ? String(editSale.serviceId) : (prefillService || ""),
+    serviceId: editSale ? String(editSale.serviceId) : (prefillService || fromQuotation && quotationItems[0]?.serviceId || ""),
     professional: editSale?.professional || ctx.user?.name || "Dr. Murilo",
     date: editSale?.date || today(),
-    price: editSale?.price || "",
+    price: editSale?.price || (fromQuotation ? quotationTotal : ""),
     location: editSale?.location || defaultLocation,
     paymentMethod: editSale?.paymentMethod || "pix",
     cardBrand: editSale?.cardBrand || "Mastercard",
@@ -1195,9 +1268,17 @@ function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillL
   const needsInstallments = form.paymentMethod === "credit" || form.paymentMethod === "pixInstallment";
   const maxInstallments = form.paymentMethod === "credit" ? 15 : 12;
 
-  // Auto-select service price
+  // In quotation mode: sync form.price with selected services total
+  useEffect(() => {
+    if (!fromQuotation) return;
+    const total = saleServices.filter((i) => i.included).reduce((s, i) => s + (+i.finalPrice || 0), 0);
+    setForm((f) => ({ ...f, price: total, netAmountEdited: false }));
+  }, [saleServices]);
+
+  // Auto-select service price (skip in quotation mode)
   const selectedService = services.find((s) => s.id === +form.serviceId);
   useEffect(() => {
+    if (fromQuotation) return;
     if (selectedService) setForm((f) => ({ ...f, price: selectedService.price, netAmountEdited: false }));
   }, [form.serviceId]);
 
@@ -1277,15 +1358,23 @@ function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillL
       const prod = products.find((x) => x.id === +sp.productId);
       return { productId: +sp.productId, qty: +sp.qty, costAtSale: prod?.avgCost || 0, sessionType: sp.sessionType };
     });
+    const effectivePrice = fromQuotation
+      ? saleServices.filter((i) => i.included).reduce((s, i) => s + (+i.finalPrice || 0), 0)
+      : +form.price;
+    const effectiveServiceId = fromQuotation
+      ? (saleServices.find((i) => i.included)?.serviceId || form.serviceId)
+      : form.serviceId;
     const saleData = {
       ...form,
-      patientId: +form.patientId, serviceId: +form.serviceId,
-      price: +form.price, installments: +form.installments,
+      patientId: form.patientId, serviceId: effectiveServiceId,
+      price: effectivePrice, installments: +form.installments,
       creditFeeRate: +form.creditFeeRate, netAmount: +form.netAmount,
       downPaymentAmount: showEntry ? +form.downPaymentAmount : 0,
       downPaymentMethod: showEntry ? form.downPaymentMethod : "",
       installmentsData: form.paymentMethod === "pixInstallment" ? installmentsPreview : [],
       products: enriched,
+      quotationId: quotationId || null,
+      saleServices: fromQuotation ? saleServices.filter((i) => i.included) : null,
     };
     if (editing) {
       const updated = {
@@ -1329,6 +1418,27 @@ function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillL
         <button className="btn btn-ghost" onClick={onClose}>✕</button>
       </div>
       <div className="modal-body">
+
+        {/* Procedimentos do Orçamento */}
+        {fromQuotation && (
+          <div className="card" style={{ marginBottom: 16, background: T.light }}>
+            <div style={{ fontWeight: 600, marginBottom: 10, color: T.teal }}>📋 Procedimentos do Orçamento</div>
+            {saleServices.map((it, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                <input type="checkbox" checked={it.included}
+                  onChange={(e) => setSaleServices((prev) => prev.map((x, j) => j === i ? { ...x, included: e.target.checked } : x))}
+                  style={{ width: 16, height: 16, cursor: "pointer" }} />
+                <span style={{ flex: 1, fontSize: 14 }}>{it.serviceName}</span>
+                <input type="number" className="form-control" style={{ width: 110 }}
+                  value={it.finalPrice}
+                  onChange={(e) => setSaleServices((prev) => prev.map((x, j) => j === i ? { ...x, finalPrice: +e.target.value } : x))} />
+              </div>
+            ))}
+            <div style={{ textAlign: "right", fontWeight: 700, marginTop: 8, color: T.teal }}>
+              Total: {fmt(saleServices.filter((i) => i.included).reduce((s, i) => s + (+i.finalPrice || 0), 0))}
+            </div>
+          </div>
+        )}
 
         {/* Paciente + Procedimento */}
         <div className="form-row form-row-2">
@@ -2469,6 +2579,533 @@ function FinancePage({ ctx }) {
         </div>
       </div>
     </div>
+  );
+}
+
+// ─── PDF HELPER ───────────────────────────────────────────────────────────────
+function fmtDateLong(d) {
+  if (!d) return "";
+  const dt = new Date(d + "T12:00:00");
+  return dt.toLocaleDateString("pt-BR", { day: "numeric", month: "long", year: "numeric" });
+}
+
+function generateQuotationPDF(quot, patient) {
+  const items = quot.items || [];
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const teal = [27, 75, 86];
+  const teal2 = [54, 142, 153];
+  const grey = [80, 80, 80];
+  const W = 190; // content width
+  const ML = 15; // left margin
+
+  // Title
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(22);
+  doc.setTextColor(...teal);
+  doc.text("Proposta de Tratamento", ML, 28);
+  doc.setFontSize(15);
+  doc.text(patient?.name || "", ML, 40);
+
+  // Date & validity
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(11);
+  doc.setTextColor(...grey);
+  doc.text(`Curitiba, ${fmtDateLong(quot.date)}`, ML, 53);
+  if (quot.validUntil) {
+    doc.text(`Oferta válida até ${fmtDate(quot.validUntil)}`, ML, 61);
+  }
+
+  // Separator line
+  doc.setDrawColor(...teal2);
+  doc.setLineWidth(0.5);
+  doc.line(ML, 67, ML + W, 67);
+
+  // Items
+  let y = 76;
+  items.forEach((item) => {
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(12);
+    doc.setTextColor(...teal);
+    const lines = doc.splitTextToSize(`• ${item.serviceName}`, 140);
+    doc.text(lines, ML + 2, y);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(...grey);
+    doc.text(fmt(item.finalPrice), ML + W, y, { align: "right" });
+    y += lines.length * 7;
+    if (item.note) {
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      doc.setTextColor(120, 120, 120);
+      const noteLines = doc.splitTextToSize(item.note, 150);
+      doc.text(noteLines, ML + 8, y);
+      y += noteLines.length * 5.5;
+    }
+    y += 5;
+  });
+
+  // Total section
+  y += 3;
+  doc.setDrawColor(...teal);
+  doc.setLineWidth(0.4);
+  doc.line(ML, y, ML + W, y);
+  y += 9;
+
+  if (quot.discount > 0) {
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(11);
+    doc.setTextColor(...grey);
+    doc.text(`Subtotal: ${fmt(quot.total)}`, ML + W, y, { align: "right" });
+    y += 7;
+    doc.text(`Desconto: -${fmt(quot.discount)}`, ML + W, y, { align: "right" });
+    y += 7;
+  }
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(14);
+  doc.setTextColor(...teal);
+  doc.text(`Total: ${fmt(quot.totalWithDiscount)}`, ML + W, y, { align: "right" });
+
+  // Footer
+  const pH = doc.internal.pageSize.height;
+  doc.setDrawColor(180, 180, 180);
+  doc.setLineWidth(0.3);
+  doc.line(65, pH - 48, 145, pH - 48);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(13);
+  doc.setTextColor(...teal);
+  doc.text("DR. MURILO DO VALLE", 105, pH - 40, { align: "center" });
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(11);
+  doc.setTextColor(...teal2);
+  doc.text("CRO 30342", 105, pH - 33, { align: "center" });
+
+  const patSlug = (patient?.name || "proposta").replace(/\s+/g, "-").toLowerCase();
+  doc.save(`proposta-${patSlug}.pdf`);
+}
+
+// ─── QUOTATIONS PAGE ──────────────────────────────────────────────────────────
+function QuotationsPage({ ctx }) {
+  const { quotations, setQuotations, patients, setModal } = ctx;
+  const [tab, setTab] = useState("pending");
+
+  const grouped = {
+    all: quotations,
+    pending: quotations.filter((q) => q.status === "pending"),
+    approved: quotations.filter((q) => q.status === "approved"),
+    rejected: quotations.filter((q) => q.status === "rejected"),
+  };
+  const list = (grouped[tab] || []).sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+
+  function openNew() {
+    setModal({ lg: true, content: <QuotationForm ctx={ctx} onClose={() => setModal(null)} />, onClose: () => setModal(null) });
+  }
+  function openDetail(q) {
+    setModal({ lg: true, content: <QuotationDetailModal quot={q} ctx={ctx} onClose={() => setModal(null)} />, onClose: () => setModal(null) });
+  }
+  function openEdit(q) {
+    setModal({ lg: true, content: <QuotationForm ctx={ctx} editQuotation={q} onClose={() => setModal(null)} />, onClose: () => setModal(null) });
+  }
+  function openApprove(q) {
+    setModal({ lg: true, content: <ApproveQuotationModal quot={q} ctx={ctx} onClose={() => setModal(null)} />, onClose: () => setModal(null) });
+  }
+  async function reject(q) {
+    await db.updateQuotationStatus(q.id, "rejected");
+    setQuotations((prev) => prev.map((x) => x.id === q.id ? { ...x, status: "rejected" } : x));
+  }
+
+  const statusLabel = { pending: "Pendente", approved: "Aprovado", rejected: "Recusado" };
+  const statusBadge = { pending: "badge-warning", approved: "badge-ok", rejected: "badge-danger" };
+
+  return (
+    <div>
+      <div className="section-header">
+        <div className="tabs">
+          {[["pending", "Pendentes"], ["approved", "Aprovados"], ["rejected", "Recusados"], ["all", "Todos"]].map(([k, l]) => (
+            <button key={k} className={`tab ${tab === k ? "active" : ""}`} onClick={() => setTab(k)}>{l} ({grouped[k].length})</button>
+          ))}
+        </div>
+        <button className="btn btn-primary" onClick={openNew}>+ Novo Orçamento</button>
+      </div>
+      <div className="card">
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Data</th><th>Paciente</th><th>Procedimentos</th><th>Total</th><th>Válido até</th><th>Status</th><th>Ações</th></tr>
+            </thead>
+            <tbody>
+              {list.length === 0 && <tr><td colSpan={7}><div className="empty">Nenhum orçamento</div></td></tr>}
+              {list.map((q) => {
+                const p = patients.find((x) => x.id === q.patientId);
+                return (
+                  <tr key={q.id}>
+                    <td style={{ whiteSpace: "nowrap" }}>{fmtDate(q.date)}</td>
+                    <td>{p?.name || "—"}</td>
+                    <td style={{ fontSize: 12 }}>{q.items?.length || 0} procedimento(s)</td>
+                    <td><strong>{fmt(q.totalWithDiscount)}</strong>{q.discount > 0 && <div style={{ fontSize: 11, color: T.success }}>-{fmt(q.discount)} desc.</div>}</td>
+                    <td style={{ color: T.grey, fontSize: 12 }}>{q.validUntil ? fmtDate(q.validUntil) : "—"}</td>
+                    <td><span className={`badge ${statusBadge[q.status] || "badge-grey"}`}>{statusLabel[q.status] || q.status}</span></td>
+                    <td>
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                        <button className="btn btn-sm btn-secondary" onClick={() => openDetail(q)}>Ver</button>
+                        <button className="btn btn-sm btn-secondary" onClick={() => generateQuotationPDF(q, p)}>PDF</button>
+                        {q.status === "pending" && (
+                          <>
+                            <button className="btn btn-sm btn-secondary" onClick={() => openEdit(q)}>✏️</button>
+                            <button className="btn btn-sm btn-success" onClick={() => openApprove(q)}>✓ Aprovar</button>
+                            <button className="btn btn-sm btn-danger" onClick={() => reject(q)}>✕ Recusar</button>
+                          </>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── QUOTATION FORM ───────────────────────────────────────────────────────────
+function QuotationForm({ ctx, onClose, prefill = {}, editQuotation }) {
+  const { services, patients, setQuotations, locations } = ctx;
+  const editing = !!editQuotation;
+  const defaultLocation = (locations || []).find((l) => l.name === "Clínica")?.name || (locations?.[0]?.name || "");
+
+  const [form, setForm] = useState({
+    patientId: editQuotation?.patientId || prefill.patientId || "",
+    date: editQuotation?.date || today(),
+    validUntil: editQuotation?.validUntil || "",
+    location: editQuotation?.location || prefill.location || defaultLocation,
+    professional: editQuotation?.professional || ctx.user?.name || "Dr. Murilo do Valle",
+    notes: editQuotation?.notes || "",
+    appointmentId: editQuotation?.appointmentId || prefill.appointmentId || null,
+  });
+
+  const [items, setItems] = useState(
+    editQuotation?.items?.length > 0
+      ? editQuotation.items.map((it) => ({ serviceId: it.serviceId, serviceName: it.serviceName, price: it.price, note: it.note }))
+      : [{ serviceId: "", serviceName: "", price: "", note: "" }]
+  );
+  const [saving, setSaving] = useState(false);
+
+  const total = items.reduce((s, it) => s + (+it.price || 0), 0);
+  const [discount, setDiscount] = useState(editQuotation?.discount || 0);
+  const totalWithDiscount = Math.max(0, total - (+discount || 0));
+
+  function addItem() {
+    setItems((prev) => [...prev, { serviceId: "", serviceName: "", price: "", note: "" }]);
+  }
+  function removeItem(i) {
+    setItems((prev) => prev.filter((_, j) => j !== i));
+  }
+  function updateItem(i, field, val) {
+    setItems((prev) => prev.map((it, j) => j === i ? { ...it, [field]: val } : it));
+  }
+  function handleServiceSelect(i, serviceId) {
+    const svc = services.find((s) => String(s.id) === String(serviceId));
+    setItems((prev) => prev.map((it, j) => j === i ? { ...it, serviceId, serviceName: svc?.name || "", price: svc?.price || "" } : it));
+  }
+
+  function computeItems() {
+    const validItems = items.filter((it) => it.serviceName);
+    if (!validItems.length) return [];
+    const ratio = total > 0 ? totalWithDiscount / total : 1;
+    const mapped = validItems.map((it) => ({
+      serviceId: it.serviceId || null,
+      serviceName: it.serviceName,
+      price: +it.price || 0,
+      finalPrice: Math.round((+it.price || 0) * ratio * 100) / 100,
+      note: it.note || "",
+    }));
+    // Fix residual rounding on last item
+    const sumFinal = mapped.reduce((s, it) => s + it.finalPrice, 0);
+    const diff = Math.round((totalWithDiscount - sumFinal) * 100) / 100;
+    if (mapped.length > 0) mapped[mapped.length - 1].finalPrice += diff;
+    return mapped;
+  }
+
+  async function save() {
+    const validItems = computeItems();
+    if (!form.patientId || validItems.length === 0) return;
+    setSaving(true);
+    try {
+      const qData = { ...form, total, discount: +discount || 0, totalWithDiscount, appointmentId: form.appointmentId };
+      if (editing) {
+        const updated = await db.updateQuotation({ ...qData, id: editQuotation.id }, validItems);
+        setQuotations((prev) => prev.map((x) => x.id === editQuotation.id ? updated : x));
+      } else {
+        const created = await db.createQuotation(qData, validItems);
+        setQuotations((prev) => [created, ...prev]);
+      }
+      onClose();
+    } catch (e) {
+      console.error("Erro ao salvar orçamento:", e);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const sortedPatients = sortByName(patients);
+  const sortedServices = sortByName(services.filter((s) => s.active));
+
+  return (
+    <>
+      <div className="modal-header">
+        <div className="modal-title">{editing ? "Editar Orçamento" : "Novo Orçamento"}</div>
+        <button className="btn btn-ghost" onClick={onClose}>✕</button>
+      </div>
+      <div className="modal-body">
+        <div className="form-row form-row-2">
+          <div className="form-group">
+            <label>Paciente</label>
+            <SearchSelect
+              options={sortedPatients.map((p) => ({ value: p.id, label: p.name }))}
+              value={form.patientId}
+              onChange={(v) => setForm({ ...form, patientId: v })}
+              placeholder="Buscar paciente…"
+            />
+          </div>
+          <div className="form-group">
+            <label>Profissional</label>
+            <input className="form-control" value={form.professional} onChange={(e) => setForm({ ...form, professional: e.target.value })} />
+          </div>
+        </div>
+        <div className="form-row form-row-2">
+          <div className="form-group">
+            <label>Data</label>
+            <input type="date" className="form-control" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
+          </div>
+          <div className="form-group">
+            <label>Válido até (opcional)</label>
+            <input type="date" className="form-control" value={form.validUntil || ""} onChange={(e) => setForm({ ...form, validUntil: e.target.value || null })} />
+          </div>
+        </div>
+        <div className="form-group">
+          <label>Local</label>
+          <select className="form-control" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })}>
+            {(locations || []).map((l) => <option key={l.id} value={l.name}>{l.name}</option>)}
+          </select>
+        </div>
+
+        {/* Items */}
+        <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8, marginTop: 4, color: T.teal }}>Procedimentos</div>
+        {items.map((it, i) => (
+          <div key={i} style={{ background: T.light, borderRadius: 10, padding: "12px 12px 8px", marginBottom: 10 }}>
+            <div className="form-row form-row-2" style={{ marginBottom: 6 }}>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label style={{ fontSize: 12 }}>Procedimento</label>
+                <SearchSelect
+                  options={sortedServices.map((s) => ({ value: s.id, label: s.name }))}
+                  value={it.serviceId}
+                  onChange={(v) => handleServiceSelect(i, v)}
+                  placeholder="Buscar procedimento…"
+                />
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+                <div className="form-group" style={{ marginBottom: 0, flex: 1 }}>
+                  <label style={{ fontSize: 12 }}>Valor (R$)</label>
+                  <input type="number" className="form-control" value={it.price}
+                    onChange={(e) => updateItem(i, "price", e.target.value)} />
+                </div>
+                <button className="btn btn-sm btn-danger" style={{ marginBottom: 2 }} onClick={() => removeItem(i)} disabled={items.length === 1}>🗑</button>
+              </div>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <input className="form-control" value={it.note} placeholder="Observação opcional..."
+                onChange={(e) => updateItem(i, "note", e.target.value)} style={{ fontSize: 13 }} />
+            </div>
+          </div>
+        ))}
+        <button className="btn btn-secondary btn-sm" onClick={addItem} style={{ marginBottom: 16 }}>+ Adicionar procedimento</button>
+
+        {/* Totals */}
+        <div style={{ background: T.light, borderRadius: 10, padding: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+            <span style={{ color: T.grey }}>Subtotal dos procedimentos</span>
+            <strong>{fmt(total)}</strong>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <span style={{ color: T.grey }}>Desconto (R$)</span>
+            <input type="number" className="form-control" style={{ width: 120, textAlign: "right" }}
+              value={discount} onChange={(e) => setDiscount(e.target.value)} min={0} max={total} />
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 8, borderTop: `2px solid ${T.teal}` }}>
+            <strong style={{ color: T.teal }}>Total com Desconto</strong>
+            <strong style={{ color: T.teal, fontSize: 17 }}>{fmt(totalWithDiscount)}</strong>
+          </div>
+          {+discount > 0 && <div style={{ fontSize: 11, color: T.grey, marginTop: 4 }}>Desconto rateado proporcionalmente entre os procedimentos</div>}
+        </div>
+      </div>
+      <div className="modal-footer">
+        <button className="btn btn-secondary" onClick={onClose}>Cancelar</button>
+        <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? "Salvando…" : "Salvar Orçamento"}</button>
+      </div>
+    </>
+  );
+}
+
+// ─── QUOTATION DETAIL MODAL ───────────────────────────────────────────────────
+function QuotationDetailModal({ quot, ctx, onClose }) {
+  const { patients, sales, setQuotations, setModal } = ctx;
+  const patient = patients.find((p) => p.id === quot.patientId);
+  const linkedSales = (sales || []).filter((s) => s.quotationId === quot.id);
+
+  const statusLabel = { pending: "Pendente", approved: "Aprovado", rejected: "Recusado" };
+  const statusBadge = { pending: "badge-warning", approved: "badge-ok", rejected: "badge-danger" };
+
+  async function reject() {
+    await db.updateQuotationStatus(quot.id, "rejected");
+    setQuotations((prev) => prev.map((x) => x.id === quot.id ? { ...x, status: "rejected" } : x));
+    onClose();
+  }
+  function openEdit() {
+    onClose();
+    setModal({ lg: true, content: <QuotationForm ctx={ctx} editQuotation={quot} onClose={() => setModal(null)} />, onClose: () => setModal(null) });
+  }
+  function openApprove() {
+    onClose();
+    setModal({ lg: true, content: <ApproveQuotationModal quot={quot} ctx={ctx} onClose={() => setModal(null)} />, onClose: () => setModal(null) });
+  }
+
+  return (
+    <>
+      <div className="modal-header">
+        <div className="modal-title">📋 Orçamento — {patient?.name}</div>
+        <button className="btn btn-ghost" onClick={onClose}>✕</button>
+      </div>
+      <div className="modal-body">
+        <div style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+          <span className={`badge ${statusBadge[quot.status] || "badge-grey"}`} style={{ fontSize: 13, padding: "4px 12px" }}>{statusLabel[quot.status] || quot.status}</span>
+          <span style={{ color: T.grey, fontSize: 13 }}>{fmtDate(quot.date)}</span>
+          {quot.validUntil && <span style={{ color: T.grey, fontSize: 13 }}>Válido até {fmtDate(quot.validUntil)}</span>}
+          <span style={{ color: T.grey, fontSize: 13 }}>{quot.professional}</span>
+        </div>
+
+        {/* Items */}
+        <div style={{ fontWeight: 600, color: T.teal, marginBottom: 8 }}>Procedimentos</div>
+        {(quot.items || []).map((it, i) => (
+          <div key={i} style={{ padding: "10px 0", borderBottom: `1px solid ${T.light}` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+              <div>
+                <span style={{ fontWeight: 600, fontSize: 14 }}>• {it.serviceName}</span>
+                {it.note && <div style={{ color: T.grey, fontSize: 12, marginTop: 3 }}>{it.note}</div>}
+              </div>
+              <span style={{ fontWeight: 600, whiteSpace: "nowrap", marginLeft: 12 }}>{fmt(it.finalPrice)}</span>
+            </div>
+          </div>
+        ))}
+
+        {/* Totals */}
+        <div style={{ marginTop: 16, padding: "12px 0", borderTop: `2px solid ${T.teal}` }}>
+          {quot.discount > 0 && (
+            <>
+              <div style={{ display: "flex", justifyContent: "space-between", color: T.grey, fontSize: 13, marginBottom: 4 }}>
+                <span>Subtotal</span><span>{fmt(quot.total)}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", color: T.success, fontSize: 13, marginBottom: 8 }}>
+                <span>Desconto</span><span>-{fmt(quot.discount)}</span>
+              </div>
+            </>
+          )}
+          <div style={{ display: "flex", justifyContent: "space-between" }}>
+            <strong style={{ color: T.teal }}>Total</strong>
+            <strong style={{ color: T.teal, fontSize: 18 }}>{fmt(quot.totalWithDiscount)}</strong>
+          </div>
+        </div>
+
+        {/* Linked sales */}
+        {linkedSales.length > 0 && (
+          <div style={{ marginTop: 16 }}>
+            <div style={{ fontWeight: 600, color: T.teal, marginBottom: 8 }}>Vendas vinculadas ({linkedSales.length})</div>
+            {linkedSales.map((s) => (
+              <div key={s.id} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid ${T.light}`, fontSize: 13 }}>
+                <span>{fmtDate(s.date)}</span>
+                <strong>{fmt(s.price)}</strong>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="modal-footer" style={{ flexWrap: "wrap", gap: 8 }}>
+        <button className="btn btn-secondary" onClick={() => generateQuotationPDF(quot, patient)}>⬇ PDF</button>
+        {quot.status === "pending" && (
+          <>
+            <button className="btn btn-secondary" onClick={openEdit}>✏️ Editar</button>
+            <button className="btn btn-danger" onClick={reject}>✕ Recusar</button>
+            <button className="btn btn-success" onClick={openApprove}>✓ Aprovar</button>
+          </>
+        )}
+        <button className="btn btn-ghost" onClick={onClose}>Fechar</button>
+      </div>
+    </>
+  );
+}
+
+// ─── APPROVE QUOTATION MODAL ──────────────────────────────────────────────────
+function ApproveQuotationModal({ quot, ctx, onClose }) {
+  const { patients, setQuotations, setModal } = ctx;
+  const patient = patients.find((p) => p.id === quot.patientId);
+
+  const [approvalItems, setApprovalItems] = useState(
+    (quot.items || []).map((it) => ({ ...it, included: true }))
+  );
+
+  const total = approvalItems.filter((i) => i.included).reduce((s, i) => s + (+i.finalPrice || 0), 0);
+
+  function toggleItem(i, val) {
+    setApprovalItems((prev) => prev.map((x, j) => j === i ? { ...x, included: val } : x));
+  }
+  function updatePrice(i, val) {
+    setApprovalItems((prev) => prev.map((x, j) => j === i ? { ...x, finalPrice: +val } : x));
+  }
+
+  async function createSale() {
+    const selected = approvalItems.filter((i) => i.included);
+    if (!selected.length) return;
+    await db.updateQuotationStatus(quot.id, "approved");
+    setQuotations((prev) => prev.map((x) => x.id === quot.id ? { ...x, status: "approved" } : x));
+    onClose();
+    setModal({
+      lg: true,
+      content: <SaleForm
+        ctx={ctx}
+        prefillPatient={quot.patientId}
+        quotationId={quot.id}
+        quotationItems={selected}
+        onClose={() => setModal(null)}
+      />,
+      onClose: () => setModal(null),
+    });
+  }
+
+  return (
+    <>
+      <div className="modal-header">
+        <div className="modal-title">✓ Aprovar Orçamento — {patient?.name}</div>
+        <button className="btn btn-ghost" onClick={onClose}>✕</button>
+      </div>
+      <div className="modal-body">
+        <div style={{ color: T.grey, fontSize: 13, marginBottom: 16 }}>Selecione os procedimentos que o paciente aprovou e ajuste os valores se necessário.</div>
+        {approvalItems.map((it, i) => (
+          <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: `1px solid ${T.light}` }}>
+            <input type="checkbox" checked={it.included} onChange={(e) => toggleItem(i, e.target.checked)} style={{ width: 16, height: 16, cursor: "pointer" }} />
+            <span style={{ flex: 1, fontWeight: it.included ? 600 : 400, color: it.included ? T.dark : T.grey }}>{it.serviceName}</span>
+            {it.note && <span style={{ fontSize: 11, color: T.grey, maxWidth: 100 }}>{it.note}</span>}
+            <input type="number" className="form-control" style={{ width: 110 }} disabled={!it.included}
+              value={it.finalPrice} onChange={(e) => updatePrice(i, e.target.value)} />
+          </div>
+        ))}
+        <div style={{ marginTop: 16, textAlign: "right" }}>
+          <strong style={{ color: T.teal, fontSize: 17 }}>Total: {fmt(total)}</strong>
+        </div>
+      </div>
+      <div className="modal-footer">
+        <button className="btn btn-secondary" onClick={onClose}>Cancelar</button>
+        <button className="btn btn-success" onClick={createSale} disabled={!approvalItems.some((i) => i.included)}>💰 Criar Venda</button>
+      </div>
+    </>
   );
 }
 

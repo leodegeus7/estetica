@@ -68,7 +68,9 @@ CREATE TABLE IF NOT EXISTS appointments (
   time time NOT NULL,
   status text DEFAULT 'scheduled',
   sale_id uuid,
-  location text DEFAULT 'Clínica'
+  location text DEFAULT 'Clínica',
+  duration integer DEFAULT 60,
+  appointment_type text DEFAULT 'consulta'
 );
 
 CREATE TABLE IF NOT EXISTS sales (
@@ -88,7 +90,9 @@ CREATE TABLE IF NOT EXISTS sales (
   location_id uuid REFERENCES locations(id),
   down_payment_amount numeric DEFAULT 0,
   down_payment_method text DEFAULT '',
-  notes text DEFAULT ''
+  notes text DEFAULT '',
+  quotation_id uuid,
+  sale_services jsonb
 );
 
 CREATE TABLE IF NOT EXISTS sale_products (
@@ -98,6 +102,33 @@ CREATE TABLE IF NOT EXISTS sale_products (
   qty numeric DEFAULT 0,
   cost_at_sale numeric DEFAULT 0,
   session_type text DEFAULT 'initial'
+);
+
+CREATE TABLE IF NOT EXISTS quotations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  patient_id uuid REFERENCES patients(id),
+  appointment_id uuid REFERENCES appointments(id),
+  professional text DEFAULT '',
+  date date NOT NULL,
+  valid_until date,
+  location text DEFAULT '',
+  status text DEFAULT 'pending',
+  total numeric DEFAULT 0,
+  discount numeric DEFAULT 0,
+  total_with_discount numeric DEFAULT 0,
+  notes text DEFAULT '',
+  created_at timestamptz DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS quotation_items (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  quotation_id uuid REFERENCES quotations(id) ON DELETE CASCADE,
+  service_id uuid REFERENCES services(id),
+  service_name text NOT NULL,
+  price numeric NOT NULL,
+  final_price numeric NOT NULL,
+  note text DEFAULT '',
+  sort_order integer DEFAULT 0
 );
 
 -- ── RLS ──────────────────────────────────────────────────────────────────────
@@ -120,3 +151,14 @@ CREATE POLICY "auth users" ON costs FOR ALL USING (auth.role() = 'authenticated'
 CREATE POLICY "auth users" ON appointments FOR ALL USING (auth.role() = 'authenticated');
 CREATE POLICY "auth users" ON sales FOR ALL USING (auth.role() = 'authenticated');
 CREATE POLICY "auth users" ON sale_products FOR ALL USING (auth.role() = 'authenticated');
+
+ALTER TABLE quotations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE quotation_items ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "auth users" ON quotations FOR ALL USING (auth.role() = 'authenticated');
+CREATE POLICY "auth users" ON quotation_items FOR ALL USING (auth.role() = 'authenticated');
+
+-- ── Migrations (run these on existing DB) ────────────────────────────────────
+-- ALTER TABLE appointments ADD COLUMN IF NOT EXISTS duration integer DEFAULT 60;
+-- ALTER TABLE appointments ADD COLUMN IF NOT EXISTS appointment_type text DEFAULT 'consulta';
+-- ALTER TABLE sales ADD COLUMN IF NOT EXISTS quotation_id uuid;
+-- ALTER TABLE sales ADD COLUMN IF NOT EXISTS sale_services jsonb;
