@@ -1121,9 +1121,12 @@ function SalesPage({ ctx }) {
   }
   const [confirmDelete, setConfirmDelete] = useState(null);
 
-  function deleteSale(id) {
+  async function deleteSale(id) {
     if (confirmDelete === id) {
-      setSales((prev) => prev.filter((s) => s.id !== id));
+      try {
+        await db.deleteSale(id);
+        setSales((prev) => prev.filter((s) => s.id !== id));
+      } catch (e) { console.error("Erro ao excluir venda:", e); }
       setConfirmDelete(null);
     } else {
       setConfirmDelete(id);
@@ -1349,7 +1352,7 @@ function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillL
   const sumMismatch = form.paymentMethod === "pixInstallment" && installmentsPreview.length > 0 && Math.abs(installmentsSum - remainingAmount) > 0.01;
 
   const productCost = saleProducts.reduce((sum, sp) => {
-    const prod = products.find((x) => x.id === +sp.productId);
+    const prod = products.find((x) => String(x.id) === String(sp.productId));
     return sum + (prod ? prod.avgCost * (+sp.qty || 0) : 0);
   }, 0);
   const feeAmt = (+form.price || 0) - (+form.netAmount || 0);
@@ -1365,10 +1368,10 @@ function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillL
     if (!form.patientId || !form.serviceId || !form.price) return;
     if (sumMismatch) return;
     if (stockErrors.length > 0) return;
-    const validProds = saleProducts.filter((sp) => sp.productId && sp.qty > 0);
+    const validProds = saleProducts.filter((sp) => sp.productId && +sp.qty > 0);
     const enriched = validProds.map((sp) => {
-      const prod = products.find((x) => x.id === +sp.productId);
-      return { productId: +sp.productId, qty: +sp.qty, costAtSale: prod?.avgCost || 0, sessionType: sp.sessionType };
+      const prod = products.find((x) => String(x.id) === String(sp.productId));
+      return { productId: sp.productId, qty: +sp.qty, costAtSale: prod?.avgCost || 0, sessionType: sp.sessionType };
     });
     const effectivePrice = fromQuotation
       ? saleServices.filter((i) => i.included).reduce((s, i) => s + (+i.finalPrice || 0), 0)
@@ -1771,6 +1774,15 @@ function PatientsPage({ ctx }) {
     setModal({ content: <PatientForm ctx={ctx} patient={p} onClose={() => setModal(null)} />, onClose: () => setModal(null) });
   }
 
+  async function deletePatient(p) {
+    if (!window.confirm(`Excluir "${p.name}"? Esta ação não pode ser desfeita.`)) return;
+    try {
+      await db.deletePatient(p.id);
+      setPatients((prev) => prev.filter((x) => x.id !== p.id));
+      if (selected?.id === p.id) setSelected(null);
+    } catch (e) { console.error("Erro ao excluir paciente:", e); }
+  }
+
   function lastVisit(patientId) {
     const patSales = sales.filter((s) => s.patientId === patientId);
     if (patSales.length === 0) return null;
@@ -1919,6 +1931,7 @@ function PatientsPage({ ctx }) {
                       <div style={{ display: "flex", gap: 4 }}>
                         <button className="btn btn-sm btn-secondary" onClick={() => openEditPatient(p)}>✏️ Editar</button>
                         <button className="btn btn-sm btn-secondary" onClick={() => setSelected(p)}>Ver histórico</button>
+                        <button className="btn btn-sm btn-danger" onClick={() => deletePatient(p)} title="Excluir paciente">🗑</button>
                       </div>
                     </td>
                   </tr>
@@ -1977,7 +1990,7 @@ function PatientForm({ ctx, patient, onClose }) {
 
 // ─── STOCK ────────────────────────────────────────────────────────────────────
 function StockPage({ ctx }) {
-  const { products, stockEntries, setModal, setProducts, suppliers, setSuppliers } = ctx;
+  const { products, stockEntries, setModal, setProducts, setStockEntries, suppliers, setSuppliers } = ctx;
   const [tab, setTab] = useState("stock");
   const [newSupplierName, setNewSupplierName] = useState("");
   const [supplierError, setSupplierError] = useState("");
@@ -1998,6 +2011,25 @@ function StockPage({ ctx }) {
     try {
       await db.deleteProduct(p.id);
       setProducts((prev) => prev.filter((x) => x.id !== p.id));
+    } catch (e) { console.error(e); }
+  }
+
+  async function deleteEntry(entry) {
+    if (!window.confirm("Excluir esta compra? O estoque do produto será revertido.")) return;
+    try {
+      const prod = products.find((p) => p.id === entry.productId);
+      await db.deleteStockEntry(entry.id);
+      setStockEntries((prev) => prev.filter((e) => e.id !== entry.id));
+      if (prod) {
+        const newQty = prod.totalQty - entry.qty;
+        const newAvg = newQty > 0
+          ? (prod.totalQty * prod.avgCost - entry.totalCost) / newQty
+          : 0;
+        await db.updateProductStock(prod.id, Math.max(0, newQty), Math.max(0, +newAvg.toFixed(4)));
+        setProducts((prev) => prev.map((p) => p.id === prod.id
+          ? { ...p, totalQty: Math.max(0, newQty), avgCost: Math.max(0, +newAvg.toFixed(4)) }
+          : p));
+      }
     } catch (e) { console.error(e); }
   }
 
@@ -2087,7 +2119,12 @@ function StockPage({ ctx }) {
                       <td style={{ color: T.danger }}>{fmt(e.totalCost)}</td>
                       <td style={{ color: T.teal, fontWeight: 600 }}>{fmt(e.costPerUnit)}</td>
                       <td>{e.supplier || "—"}</td>
-                      <td><button className="btn btn-sm btn-secondary" onClick={() => openEditEntry(e)}>✏️</button></td>
+                      <td>
+                        <div style={{ display: "flex", gap: 4 }}>
+                          <button className="btn btn-sm btn-secondary" onClick={() => openEditEntry(e)}>✏️</button>
+                          <button className="btn btn-sm btn-danger" onClick={() => deleteEntry(e)} title="Excluir compra">🗑</button>
+                        </div>
+                      </td>
                     </tr>
                   );
                 })}

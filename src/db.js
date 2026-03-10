@@ -93,6 +93,11 @@ export async function updateStockEntry(e) {
   if (error) throw error;
 }
 
+export async function deleteStockEntry(id) {
+  const { error } = await supabase.from("stock_entries").delete().eq("id", id);
+  if (error) throw error;
+}
+
 // ── services ──────────────────────────────────────────────────────────────────
 export async function fetchServices() {
   const { data, error } = await supabase.from("services").select("*").order("name");
@@ -138,6 +143,11 @@ export async function createPatient(p) {
 
 export async function updatePatient(p) {
   const { error } = await supabase.from("patients").update(snake(p)).eq("id", p.id);
+  if (error) throw error;
+}
+
+export async function deletePatient(id) {
+  const { error } = await supabase.from("patients").delete().eq("id", id);
   if (error) throw error;
 }
 
