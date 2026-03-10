@@ -1406,12 +1406,24 @@ function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillL
         appointmentId: appointmentId || null,
       };
       setSales((prev) => [...prev, newSale]);
+      // Build qty-consumed map keyed by productId (UUID string)
+      const consumed = enriched.reduce((acc, sp) => {
+        const key = String(sp.productId);
+        acc[key] = (acc[key] || 0) + sp.qty;
+        return acc;
+      }, {});
+      // Deduct from local state
       setProducts((prev) => prev.map((p) => {
-        const consumed = enriched.filter((x) => x.productId === p.id).reduce((s, x) => s + x.qty, 0);
-        return consumed > 0 ? { ...p, totalQty: Math.max(0, p.totalQty - consumed) } : p;
+        const qty = consumed[String(p.id)] || 0;
+        return qty > 0 ? { ...p, totalQty: Math.max(0, p.totalQty - qty) } : p;
       }));
       if (appointmentId) setAppointments((prev) => prev.map((a) => a.id === appointmentId ? { ...a, status: "done", saleId: newSale.id } : a));
       await db.createSale(newSale, enriched);
+      // Persist stock deductions to Supabase
+      for (const p of products) {
+        const qty = consumed[String(p.id)] || 0;
+        if (qty > 0) await db.updateProductStock(p.id, Math.max(0, p.totalQty - qty), p.avgCost);
+      }
       const svc = services.find((s) => s.id === +form.serviceId);
       const pat = patients.find((p) => p.id === +form.patientId);
       if (svc?.needsReturn) {
