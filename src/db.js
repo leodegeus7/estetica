@@ -216,6 +216,14 @@ export async function deleteAppointment(id) {
   if (error) throw error;
 }
 
+export async function unlinkAppointmentFromSales(appointmentId) {
+  const { error } = await supabase
+    .from("sales")
+    .update({ appointment_id: null })
+    .eq("appointment_id", appointmentId);
+  if (error) throw error;
+}
+
 // ── sales ─────────────────────────────────────────────────────────────────────
 export async function fetchSales() {
   const { data, error } = await supabase.from("sales").select("*, sale_products(*)").order("date", { ascending: false });

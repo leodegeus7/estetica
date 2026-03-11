@@ -1148,10 +1148,16 @@ function AppointmentsPage({ ctx }) {
     setAppointments((prev) => prev.map((a) => a.id === id ? { ...a, status: "cancelled" } : a));
     db.cancelAppointment(id).catch(console.error);
   }
-  function deleteAppt(id) {
-    setAppointments((prev) => prev.filter((a) => a.id !== id));
-    setConfirmDeleteId(null);
-    db.deleteAppointment(id).catch(console.error);
+  async function deleteAppt(id) {
+    try {
+      await db.unlinkAppointmentFromSales(id);
+      await db.deleteAppointment(id);
+      setAppointments((prev) => prev.filter((a) => a.id !== id));
+      setConfirmDeleteId(null);
+    } catch (e) {
+      console.error(e);
+      alert("Erro ao apagar agendamento: " + (e.message || "tente novamente"));
+    }
   }
   function openAttendanceView(appt) {
     const att = (attendances || []).find((a) => String(a.appointmentId) === String(appt.id));
@@ -1503,6 +1509,72 @@ function SalesPage({ ctx }) {
               })}
             </tbody>
           </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── SALE DETAIL MODAL ────────────────────────────────────────────────────────
+function SaleDetailModal({ sale, ctx, onClose }) {
+  const { patients, services } = ctx;
+  const patient = patients.find((p) => String(p.id) === String(sale.patientId));
+  const sv = services.find((s) => String(s.id) === String(sale.serviceId));
+  const svcLabel = sale.saleServices?.length > 0
+    ? sale.saleServices
+    : sv ? [{ serviceName: sv.name, qty: 1, price: sale.price, finalPrice: sale.price }] : [];
+
+  const pmLabels = { pix: "Pix", credit: "Crédito", pixInstallment: "Pix Parcelado", cash: "Dinheiro", boleto: "Boleto", debit: "Débito" };
+  const isInstallment = sale.paymentMethod === "pixInstallment";
+  const isCredit = sale.paymentMethod === "credit";
+  const net = calcNetValue(sale);
+
+  return (
+    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <div className="modal-header">
+          <div className="modal-title">💰 Venda — {patient?.name}</div>
+          <button className="btn btn-ghost" onClick={onClose}>✕</button>
+        </div>
+        <div className="modal-body">
+          <div className="stat-row"><span className="stat-label">Data</span><span>{fmtDate(sale.date)}</span></div>
+          {sale.professional && <div className="stat-row"><span className="stat-label">Profissional</span><span>{sale.professional}</span></div>}
+          {sale.location && <div className="stat-row"><span className="stat-label">Local</span><span>{sale.location}</span></div>}
+
+          {svcLabel.length > 0 && (
+            <div style={{ marginTop: 16, marginBottom: 16 }}>
+              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8, color: T.teal }}>📋 Procedimentos</div>
+              {svcLabel.map((it, i) => (
+                <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid ${T.light}` }}>
+                  <span style={{ fontSize: 13 }}>{it.serviceName}{it.qty > 1 && ` ×${it.qty}`}</span>
+                  <span style={{ fontSize: 13, fontWeight: 600 }}>{fmt(it.finalPrice ?? it.price)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="stat-row"><span className="stat-label">Forma de pagamento</span><span>{pmLabels[sale.paymentMethod] || sale.paymentMethod}{isCredit && sale.installments > 1 && ` — ${sale.installments}×`}</span></div>
+          {isInstallment && (
+            <div className="stat-row">
+              <span className="stat-label">Parcelas pagas</span>
+              <span style={{ color: sale.paidInstallments >= sale.installments ? T.success : T.warning, fontWeight: 600 }}>
+                {sale.paidInstallments}/{sale.installments}
+                {sale.paidInstallments < sale.installments && " — pendente"}
+              </span>
+            </div>
+          )}
+          {sale.downPaymentAmount > 0 && (
+            <div className="stat-row"><span className="stat-label">Entrada</span><span>{fmt(sale.downPaymentAmount)} ({pmLabels[sale.downPaymentMethod] || sale.downPaymentMethod})</span></div>
+          )}
+          {sale.notes && <div className="stat-row"><span className="stat-label">Observações</span><span style={{ fontSize: 13 }}>{sale.notes}</span></div>}
+
+          <div style={{ borderTop: `2px solid ${T.light}`, marginTop: 12, paddingTop: 12 }}>
+            <div className="stat-row"><span style={{ fontWeight: 700 }}>Total</span><span style={{ fontWeight: 700, fontSize: 16 }}>{fmt(sale.price)}</span></div>
+            <div className="stat-row"><span className="stat-label">Valor líquido</span><span style={{ color: net >= 0 ? T.success : T.danger, fontWeight: 600 }}>{fmt(net)}</span></div>
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-secondary" onClick={onClose}>Fechar</button>
         </div>
       </div>
     </div>
@@ -2238,7 +2310,7 @@ function AttendanceForm({ appointment, ctx, onClose }) {
 
 // ─── PATIENTS ─────────────────────────────────────────────────────────────────
 function PatientsPage({ ctx }) {
-  const { patients, setPatients, sales, services, products, attendances, setModal } = ctx;
+  const { patients, setPatients, sales, services, products, attendances, quotations, appointments, setModal } = ctx;
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState(null);
   const [sortField, setSortField] = useState("name");
@@ -2289,6 +2361,9 @@ function PatientsPage({ ctx }) {
 
   if (selected) {
     const patSales = sales.filter((s) => String(s.patientId) === String(selected.id));
+    const patQuotations = (quotations || []).filter((q) => String(q.patientId) === String(selected.id));
+    const patAppointments = (appointments || []).filter((a) => String(a.patientId) === String(selected.id))
+      .slice().sort((a, b) => b.date.localeCompare(a.date) || b.time.localeCompare(a.time));
     const totalSpent = patSales.reduce((s, x) => s + x.price, 0);
     const totalProfit = patSales.reduce((s, x) => s + calcNetValue(x), 0);
     const lastV = lastVisit(selected.id);
@@ -2342,25 +2417,105 @@ function PatientsPage({ ctx }) {
           </div>
         )}
 
-        <div className="card">
-          <div className="section-title" style={{ marginBottom: 12 }}>Histórico de Procedimentos</div>
+        <div className="card" style={{ marginBottom: 20 }}>
+          <div className="section-title" style={{ marginBottom: 12 }}>Histórico de Vendas</div>
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Data</th><th>Procedimento(s)</th><th>Valor</th><th>Lucro Líq.</th></tr></thead>
+              <thead><tr><th>Data</th><th>Procedimento(s)</th><th>Valor</th><th>Pagamento</th><th>Status</th><th></th></tr></thead>
               <tbody>
-                {patSales.length === 0 && <tr><td colSpan={4}><div className="empty">Nenhum procedimento</div></td></tr>}
+                {patSales.length === 0 && <tr><td colSpan={6}><div className="empty">Nenhuma venda</div></td></tr>}
                 {patSales.slice().sort((a, b) => b.date.localeCompare(a.date)).map((s) => {
                   const sv = services.find((x) => String(x.id) === String(s.serviceId));
-                  const net = calcNetValue(s);
                   const svcLabel = s.saleServices?.length > 0
                     ? s.saleServices.map((it) => `${it.serviceName}${it.qty > 1 ? ` ×${it.qty}` : ""}`).join(", ")
                     : (sv?.name || "—");
+                  const pmLabels = { pix: "Pix", credit: "Crédito", pixInstallment: "Pix Parcelado", cash: "Dinheiro", boleto: "Boleto", debit: "Débito" };
+                  const isInstallment = s.paymentMethod === "pixInstallment";
+                  const fullyPaid = !isInstallment || (s.paidInstallments >= s.installments);
                   return (
                     <tr key={s.id}>
                       <td>{fmtDate(s.date)}</td>
                       <td style={{ fontSize: 13 }}>{svcLabel}</td>
                       <td>{fmt(s.price)}</td>
-                      <td style={{ color: T.success, fontWeight: 600 }}>{fmt(net)}</td>
+                      <td style={{ fontSize: 12, color: T.grey }}>{pmLabels[s.paymentMethod] || s.paymentMethod}</td>
+                      <td>
+                        {fullyPaid
+                          ? <span className="badge badge-ok">✓ Pago</span>
+                          : <span className="badge badge-warning">⏳ {s.paidInstallments}/{s.installments} parcelas</span>
+                        }
+                      </td>
+                      <td>
+                        <button className="btn btn-sm btn-secondary" onClick={() => setModal({ lg: true, content: <SaleDetailModal sale={s} ctx={ctx} onClose={() => setModal(null)} />, onClose: () => setModal(null) })}>Ver</button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="card" style={{ marginBottom: 20 }}>
+          <div className="section-title" style={{ marginBottom: 12 }}>Orçamentos</div>
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>Data</th><th>Procedimento(s)</th><th>Total</th><th>Validade</th><th>Status</th><th></th></tr></thead>
+              <tbody>
+                {patQuotations.length === 0 && <tr><td colSpan={6}><div className="empty">Nenhum orçamento</div></td></tr>}
+                {patQuotations.slice().sort((a, b) => b.date.localeCompare(a.date)).map((q) => {
+                  const itemsLabel = q.items?.length > 0
+                    ? q.items.map((it) => it.serviceName).join(", ")
+                    : "—";
+                  const statusMap = {
+                    pending:  { label: "⏳ Pendente",  cls: "badge-warning" },
+                    approved: { label: "✅ Aprovado",  cls: "badge-ok"      },
+                    rejected: { label: "❌ Rejeitado", cls: "badge-grey"    },
+                  };
+                  const st = statusMap[q.status] || statusMap.pending;
+                  const isExpired = q.validUntil && q.validUntil < today() && q.status === "pending";
+                  return (
+                    <tr key={q.id}>
+                      <td>{fmtDate(q.date)}</td>
+                      <td style={{ fontSize: 13 }}>{itemsLabel}</td>
+                      <td>{fmt(q.totalWithDiscount ?? q.total)}</td>
+                      <td style={{ fontSize: 12, color: isExpired ? T.danger : T.grey }}>
+                        {q.validUntil ? fmtDate(q.validUntil) + (isExpired ? " — vencido" : "") : "—"}
+                      </td>
+                      <td><span className={`badge ${st.cls}`}>{st.label}</span></td>
+                      <td>
+                        <button className="btn btn-sm btn-secondary" onClick={() => setModal({ lg: true, content: <QuotationDetailModal quot={q} ctx={ctx} onClose={() => setModal(null)} />, onClose: () => setModal(null) })}>Ver</button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="section-title" style={{ marginBottom: 12 }}>Agendamentos</div>
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>Data</th><th>Hora</th><th>Tipo</th><th>Procedimento</th><th>Status</th><th></th></tr></thead>
+              <tbody>
+                {patAppointments.length === 0 && <tr><td colSpan={6}><div className="empty">Nenhum agendamento</div></td></tr>}
+                {patAppointments.map((a) => {
+                  const svc = services.find((x) => String(x.id) === String(a.serviceId));
+                  const statusInfo = apptStatusInfo(a);
+                  const att = (attendances || []).find((x) => String(x.appointmentId) === String(a.id));
+                  return (
+                    <tr key={a.id}>
+                      <td style={{ whiteSpace: "nowrap" }}>{fmtDate(a.date)}</td>
+                      <td>{a.time}</td>
+                      <td><span className={`badge ${a.appointmentType === "avaliacao" ? "badge-warning" : "badge-scheduled"}`}>{a.appointmentType === "avaliacao" ? "Avaliação" : "Consulta"}</span></td>
+                      <td style={{ fontSize: 13 }}>{svc?.name || "—"}</td>
+                      <td><span className={`badge ${statusInfo.badgeClass}`}>{statusInfo.label}</span></td>
+                      <td>
+                        {a.status === "done" && (
+                          <button className="btn btn-sm btn-secondary" onClick={() => setModal({ lg: true, content: <AttendanceViewModal appointment={a} attendance={att} ctx={ctx} onClose={() => setModal(null)} />, onClose: () => setModal(null) })}>👁 Ver</button>
+                        )}
+                      </td>
                     </tr>
                   );
                 })}
