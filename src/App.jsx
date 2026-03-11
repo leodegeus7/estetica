@@ -144,6 +144,31 @@ function isBirthdaySoon(birthdate, days = 3) {
 function calcSaleCost(saleProducts) {
   return (saleProducts || []).reduce((s, p) => s + (p.costAtSale || 0) * p.qty, 0);
 }
+
+// Computes pending procedures for a patient = sold qty - already used in attendances
+function calcPendingProcedures(patientId, sales, attendances) {
+  const sold = {};
+  sales.filter((s) => String(s.patientId) === String(patientId)).forEach((s) => {
+    if (s.saleServices?.length > 0) {
+      s.saleServices.forEach((sv) => {
+        const key = sv.serviceId || sv.serviceName;
+        if (!sold[key]) sold[key] = { serviceId: sv.serviceId, serviceName: sv.serviceName, total: 0 };
+        sold[key].total += (sv.qty || 1);
+      });
+    } else if (s.serviceId) {
+      const key = s.serviceId;
+      if (!sold[key]) sold[key] = { serviceId: s.serviceId, serviceName: "", total: 0 };
+      sold[key].total += 1;
+    }
+  });
+  attendances.filter((a) => String(a.patientId) === String(patientId)).forEach((a) => {
+    (a.procedures || []).forEach((p) => {
+      const key = p.serviceId || p.serviceName;
+      if (sold[key]) sold[key].total -= p.qtyUsed;
+    });
+  });
+  return Object.values(sold).filter((p) => p.total > 0);
+}
 function calcNetValue(sale) {
   const productCost = calcSaleCost(sale.products);
   const fee = sale.paymentMethod === "credit" ? (sale.creditFeeRate / 100) * sale.price : 0;
@@ -428,6 +453,8 @@ function MainApp({ user, onLogout }) {
   const [appointments, setAppointments] = useState([]);
   const [quotations, setQuotations] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
+  const [attendances, setAttendances] = useState([]);
+  const [tasks, setTasks] = useState([]);
   const [modal, setModal] = useState(null);
   const [pendingReturn, setPendingReturn] = useState(null);
   const [dataLoading, setDataLoading] = useState(true);
@@ -444,7 +471,9 @@ function MainApp({ user, onLogout }) {
       db.fetchAppointments(),
       db.fetchQuotations(),
       db.fetchSuppliers().catch(() => []),
-    ]).then(([locs, prods, stock, svcs, pats, sls, cts, appts, quots, supps]) => {
+      db.fetchAttendances().catch(() => []),
+      db.fetchTasks().catch(() => []),
+    ]).then(([locs, prods, stock, svcs, pats, sls, cts, appts, quots, supps, atts, tsks]) => {
       setLocations(locs.length > 0 ? locs : INIT_LOCATIONS);
       setProducts(prods);
       setStockEntries(stock);
@@ -455,6 +484,8 @@ function MainApp({ user, onLogout }) {
       setAppointments(appts);
       setQuotations(quots);
       setSuppliers(supps || []);
+      setAttendances(atts || []);
+      setTasks(tsks || []);
       setDataLoading(false);
     }).catch((err) => {
       console.error("Erro ao carregar dados:", err);
@@ -474,6 +505,8 @@ function MainApp({ user, onLogout }) {
     pendingReturn, setPendingReturn, setPage, locations, setLocations,
     quotations, setQuotations,
     suppliers, setSuppliers,
+    attendances, setAttendances,
+    tasks, setTasks,
     db,
   };
 
@@ -696,11 +729,197 @@ function SearchSelect({ options, value, onChange, placeholder = "Buscar…" }) {
   );
 }
 
+// ─── TASKS WIDGET ─────────────────────────────────────────────────────────────
+function TasksWidget({ ctx }) {
+  const { tasks, setTasks } = ctx;
+  const [showForm, setShowForm] = useState(false);
+  const [selected, setSelected] = useState(null);
+  const [editTask, setEditTask] = useState(null);
+  const [dragOver, setDragOver] = useState(null);
+  const dragItem = useRef(null);
+
+  const urgencyLabel = { low: "Baixa", normal: "Normal", high: "Alta", urgent: "🔴 Urgente" };
+  const urgencyColor = { low: T.grey, normal: T.teal, high: T.warning, urgent: T.danger };
+
+  function onDragStart(i) { dragItem.current = i; }
+  function onDragOver(e, i) { e.preventDefault(); setDragOver(i); }
+  async function onDrop(i) {
+    if (dragItem.current === null || dragItem.current === i) { dragItem.current = null; setDragOver(null); return; }
+    const reordered = [...tasks];
+    const [moved] = reordered.splice(dragItem.current, 1);
+    reordered.splice(i, 0, moved);
+    const withOrder = reordered.map((t, idx) => ({ ...t, sortOrder: idx }));
+    setTasks(withOrder);
+    dragItem.current = null;
+    setDragOver(null);
+    try { await db.updateTaskOrder(withOrder); } catch (e) { console.error(e); }
+  }
+
+  async function deleteTask(task) {
+    try {
+      await db.deleteTask(task.id);
+      setTasks((prev) => prev.filter((t) => t.id !== task.id));
+      setSelected(null);
+    } catch (e) { console.error(e); }
+  }
+
+  return (
+    <div className="card" style={{ height: "fit-content" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ fontWeight: 600, fontSize: 15 }}>📋 Tarefas</div>
+        <button className="btn btn-sm btn-primary" onClick={() => setShowForm(true)}>+ Tarefa</button>
+      </div>
+      {tasks.length === 0 && <div className="empty" style={{ padding: "20px 0" }}>Nenhuma tarefa pendente</div>}
+      {tasks.map((task, i) => {
+        const isOverdue = task.dueDate && task.dueDate < today();
+        return (
+          <div key={task.id}
+            draggable
+            onDragStart={() => onDragStart(i)}
+            onDragOver={(e) => onDragOver(e, i)}
+            onDrop={() => onDrop(i)}
+            onClick={() => setSelected(task)}
+            style={{
+              cursor: "pointer", padding: "10px 0",
+              borderBottom: `1px solid ${T.light}`,
+              borderTop: dragOver === i ? `2px solid ${T.blue}` : undefined,
+              display: "flex", justifyContent: "space-between", alignItems: "center",
+              opacity: dragItem.current === i ? 0.5 : 1,
+            }}>
+            <div>
+              <div style={{ fontWeight: 500, fontSize: 13.5 }}>{task.title}</div>
+              {task.dueDate && (
+                <div style={{ fontSize: 11, color: isOverdue ? T.danger : T.grey, marginTop: 2 }}>
+                  📅 {fmtDate(task.dueDate)}{isOverdue && " — vencida"}
+                </div>
+              )}
+            </div>
+            <span style={{ fontSize: 11, color: urgencyColor[task.urgency] || T.grey, fontWeight: 600, whiteSpace: "nowrap", marginLeft: 8 }}>
+              {urgencyLabel[task.urgency] || task.urgency}
+            </span>
+          </div>
+        );
+      })}
+
+      {showForm && (
+        <TaskFormModal ctx={ctx} onClose={() => setShowForm(false)} />
+      )}
+      {editTask && (
+        <TaskFormModal ctx={ctx} editTask={editTask} onClose={() => setEditTask(null)} />
+      )}
+      {selected && (
+        <TaskDetailModal task={selected} onDelete={deleteTask} onEdit={(t) => { setSelected(null); setEditTask(t); }} onClose={() => setSelected(null)} />
+      )}
+    </div>
+  );
+}
+
+function TaskFormModal({ ctx, onClose, editTask = null }) {
+  const { tasks, setTasks } = ctx;
+  const [form, setForm] = useState(
+    editTask
+      ? { title: editTask.title, description: editTask.description || "", urgency: editTask.urgency || "normal", dueDate: editTask.dueDate || "" }
+      : { title: "", description: "", urgency: "normal", dueDate: "" }
+  );
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    if (!form.title.trim()) return;
+    setSaving(true);
+    try {
+      if (editTask) {
+        const updated = await db.updateTask({ ...editTask, ...form });
+        setTasks((prev) => prev.map((t) => t.id === updated.id ? { ...t, ...updated } : t));
+      } else {
+        const sortOrder = tasks.length;
+        const created = await db.createTask({ ...form, sortOrder });
+        setTasks((prev) => [...prev, created]);
+      }
+      onClose();
+    } catch (e) { console.error(e); setSaving(false); }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <div className="modal-header">
+          <div className="modal-title">{editTask ? "Editar Tarefa" : "Nova Tarefa"}</div>
+          <button className="btn btn-ghost" onClick={onClose}>✕</button>
+        </div>
+        <div className="modal-body">
+          <div className="form-group"><label>Título *</label><input className="form-control" autoFocus value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></div>
+          <div className="form-group"><label>Descrição</label><textarea className="form-control" rows={3} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></div>
+          <div className="form-row form-row-2">
+            <div className="form-group">
+              <label>Urgência</label>
+              <select className="form-control" value={form.urgency} onChange={(e) => setForm({ ...form, urgency: e.target.value })}>
+                <option value="low">Baixa</option>
+                <option value="normal">Normal</option>
+                <option value="high">Alta</option>
+                <option value="urgent">Urgente</option>
+              </select>
+            </div>
+            <div className="form-group"><label>Data Limite</label><input type="date" className="form-control" value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} /></div>
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-secondary" onClick={onClose}>Cancelar</button>
+          <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? "Salvando…" : editTask ? "Salvar" : "Criar Tarefa"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TaskDetailModal({ task, onDelete, onEdit, onClose }) {
+  const urgencyLabel = { low: "Baixa", normal: "Normal", high: "Alta", urgent: "🔴 Urgente" };
+  const urgencyColor = { low: T.grey, normal: T.teal, high: T.warning, urgent: T.danger };
+  const [confirmDel, setConfirmDel] = useState(false);
+
+  return (
+    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <div className="modal-header">
+          <div className="modal-title">{task.title}</div>
+          <button className="btn btn-ghost" onClick={onClose}>✕</button>
+        </div>
+        <div className="modal-body">
+          {task.description && <p style={{ fontSize: 14, color: T.dark, marginBottom: 16 }}>{task.description}</p>}
+          <div className="stat-row"><span className="stat-label">Urgência</span><span style={{ color: urgencyColor[task.urgency], fontWeight: 600 }}>{urgencyLabel[task.urgency]}</span></div>
+          {task.dueDate && <div className="stat-row"><span className="stat-label">Data Limite</span><span style={{ color: task.dueDate < today() ? T.danger : T.dark }}>{fmtDate(task.dueDate)}{task.dueDate < today() && " — vencida"}</span></div>}
+          <div className="stat-row"><span className="stat-label">Criada em</span><span>{task.createdAt ? new Date(task.createdAt).toLocaleDateString("pt-BR") : "—"}</span></div>
+        </div>
+        <div className="modal-footer" style={{ justifyContent: "space-between" }}>
+          <div>
+            {!confirmDel ? (
+              <button className="btn btn-danger" onClick={() => setConfirmDel(true)}>🗑 Excluir</button>
+            ) : (
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span style={{ fontSize: 12, color: T.danger }}>Confirmar exclusão?</span>
+                <button className="btn btn-sm btn-danger" onClick={() => onDelete(task)}>✓ Sim</button>
+                <button className="btn btn-sm btn-ghost" onClick={() => setConfirmDel(false)}>Não</button>
+              </div>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn btn-secondary" onClick={() => { onEdit(task); onClose(); }}>✏️ Editar</button>
+            <button className="btn btn-secondary" onClick={onClose}>Fechar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
 function DashboardPage({ ctx }) {
-  const { sales, costs, patients, appointments, products, services } = ctx;
+  const { sales, costs, patients, appointments, products, services, setModal } = ctx;
   const todayStr = today();
   const curMonth = todayStr.slice(0, 7);
+
+  function openAttendance(appt) {
+    setModal({ lg: true, content: <AttendanceForm appointment={appt} ctx={ctx} onClose={() => setModal(null)} />, onClose: () => setModal(null) });
+  }
 
   const todaySales = sales.filter((s) => s.date === todayStr);
   const monthSales = sales.filter((s) => s.date.startsWith(curMonth));
@@ -729,7 +948,8 @@ function DashboardPage({ ctx }) {
   const lowStock = products.filter((p) => p.totalQty <= p.minStock);
   const birthdaySoon = patients.filter((p) => isBirthdaySoon(p.birthdate, 3));
 
-  const hasAlerts = latePatients.length > 0 || latePix.length > 0 || lowStock.length > 0 || birthdaySoon.length > 0;
+  const pendingFillAppts = appointments.filter((a) => a.status === "scheduled" && a.date < todayStr);
+  const hasAlerts = latePatients.length > 0 || latePix.length > 0 || lowStock.length > 0 || birthdaySoon.length > 0 || pendingFillAppts.length > 0;
 
   return (
     <div>
@@ -743,6 +963,25 @@ function DashboardPage({ ctx }) {
         <div className="card">
           <div className="section-header"><div className="section-title">⚠️ Alertas</div></div>
           {!hasAlerts && <div className="alert alert-success"><div className="alert-content">✅ Nenhum alerta no momento</div></div>}
+
+          {pendingFillAppts.length > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              <div className="alert alert-warning" style={{ display: "block" }}>
+                <strong>⏳ {pendingFillAppts.length} atendimento(s) aguardando preenchimento</strong>
+                {pendingFillAppts.slice(0, 5).map((a) => {
+                  const pat = patients.find((p) => String(p.id) === String(a.patientId));
+                  const svc = services.find((s) => String(s.id) === String(a.serviceId));
+                  return (
+                    <div key={a.id} style={{ marginTop: 6, cursor: "pointer", textDecoration: "underline", fontSize: 13 }}
+                      onClick={() => openAttendance(a)}>
+                      📅 {fmtDate(a.date)} — {pat?.name} — {svc?.name || "Procedimento"}
+                    </div>
+                  );
+                })}
+                {pendingFillAppts.length > 5 && <div style={{ marginTop: 4, fontSize: 12 }}>+ {pendingFillAppts.length - 5} outros</div>}
+              </div>
+            </div>
+          )}
 
           {birthdaySoon.map((p) => {
             const days = getDaysUntilBirthday(p.birthdate);
@@ -770,8 +1009,8 @@ function DashboardPage({ ctx }) {
           })}
 
           {latePix.map((s) => {
-            const p = patients.find((x) => x.id === s.patientId);
-            const svc = services.find((x) => x.id === s.serviceId);
+            const p = patients.find((x) => String(x.id) === String(s.patientId));
+            const svc = services.find((x) => String(x.id) === String(s.serviceId));
             const remaining = s.installments - s.paidInstallments;
             const installVal = fmt(s.price / s.installments);
             const msg = `Olá, ${p?.name?.split(" ")[0]}! Passando para lembrar da parcela do ${svc?.name || "procedimento"} (${installVal}). Quando puder, nos envie o Pix. 🙏`;
@@ -790,22 +1029,26 @@ function DashboardPage({ ctx }) {
           ))}
         </div>
 
-        <div className="card">
-          <div className="section-header"><div className="section-title">📅 Agenda de Hoje</div></div>
-          {todayAppt.length === 0 && <div className="empty">Nenhum agendamento hoje</div>}
-          {todayAppt.map((a) => {
-            const p = patients.find((x) => x.id === a.patientId);
-            const s = services.find((x) => x.id === a.serviceId);
-            return (
-              <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${T.light}` }}>
-                <div><div style={{ fontWeight: 500, fontSize: 14 }}>{p?.name}</div><div style={{ fontSize: 12, color: T.grey }}>{s?.name}</div></div>
-                <div style={{ textAlign: "right" }}>
-                  <div style={{ fontWeight: 600 }}>{a.time}</div>
-                  <span className={`badge badge-${a.status}`}>{a.status === "scheduled" ? "Agendado" : a.status === "done" ? "Realizado" : "Cancelado"}</span>
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div className="card">
+            <div className="section-header"><div className="section-title">📅 Agenda de Hoje</div></div>
+            {todayAppt.length === 0 && <div className="empty">Nenhum agendamento hoje</div>}
+            {todayAppt.map((a) => {
+              const p = patients.find((x) => String(x.id) === String(a.patientId));
+              const s = services.find((x) => String(x.id) === String(a.serviceId));
+              const statusInfo = apptStatusInfo(a);
+              return (
+                <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${T.light}` }}>
+                  <div><div style={{ fontWeight: 500, fontSize: 14 }}>{p?.name}</div><div style={{ fontSize: 12, color: T.grey }}>{s?.name}</div></div>
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ fontWeight: 600 }}>{a.time}</div>
+                    <span className={`badge ${statusInfo.badgeClass}`}>{statusInfo.label}</span>
+                  </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
+          <TasksWidget ctx={ctx} />
         </div>
       </div>
       <div className="grid-2">
@@ -866,15 +1109,27 @@ function MetricCard({ icon, title, value, sub, color }) {
 }
 
 // ─── APPOINTMENTS ─────────────────────────────────────────────────────────────
-function AppointmentsPage({ ctx }) {
-  const { appointments, patients, services, setAppointments, setModal } = ctx;
-  const [tab, setTab] = useState("today");
+function apptStatusInfo(a) {
   const todayStr = today();
+  if (a.status === "cancelled") return { label: "Cancelado", badgeClass: "badge-cancelled", color: T.grey };
+  if (a.status === "done") return { label: "Finalizado", badgeClass: "badge-done", color: T.success };
+  if (a.date < todayStr) return { label: "⏳ Aguardando Preenchimento", badgeClass: "badge-warning", color: T.warning };
+  return { label: "Marcado", badgeClass: "badge-scheduled", color: T.blue };
+}
+
+function AppointmentsPage({ ctx }) {
+  const { appointments, patients, services, attendances, setAppointments, setModal } = ctx;
+  const [tab, setTab] = useState("today");
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const todayStr = today();
+
+  const pendingFill = appointments.filter((a) => a.status === "scheduled" && a.date < todayStr);
 
   const grouped = {
     today: appointments.filter((a) => a.date === todayStr),
     upcoming: appointments.filter((a) => a.date > todayStr),
     past: appointments.filter((a) => a.date < todayStr),
+    fill: pendingFill,
   };
 
   function openNew() {
@@ -886,9 +1141,21 @@ function AppointmentsPage({ ctx }) {
   function openQuotation(appt) {
     setModal({ lg: true, content: <QuotationForm ctx={ctx} prefill={{ patientId: appt.patientId, appointmentId: appt.id, location: appt.location }} onClose={() => setModal(null)} />, onClose: () => setModal(null) });
   }
+  function openAttendance(appt) {
+    setModal({ lg: true, content: <AttendanceForm appointment={appt} ctx={ctx} onClose={() => setModal(null)} />, onClose: () => setModal(null) });
+  }
   function cancel(id) {
     setAppointments((prev) => prev.map((a) => a.id === id ? { ...a, status: "cancelled" } : a));
     db.cancelAppointment(id).catch(console.error);
+  }
+  function deleteAppt(id) {
+    setAppointments((prev) => prev.filter((a) => a.id !== id));
+    setConfirmDeleteId(null);
+    db.deleteAppointment(id).catch(console.error);
+  }
+  function openAttendanceView(appt) {
+    const att = (attendances || []).find((a) => String(a.appointmentId) === String(appt.id));
+    setModal({ lg: true, content: <AttendanceViewModal appointment={appt} attendance={att} ctx={ctx} onClose={() => setModal(null)} />, onClose: () => setModal(null) });
   }
 
   const list = (grouped[tab] || []).sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
@@ -900,6 +1167,9 @@ function AppointmentsPage({ ctx }) {
           {[["today", "Hoje"], ["upcoming", "Próximos"], ["past", "Anteriores"]].map(([k, l]) => (
             <button key={k} className={`tab ${tab === k ? "active" : ""}`} onClick={() => setTab(k)}>{l} ({grouped[k].length})</button>
           ))}
+          <button className={`tab ${tab === "fill" ? "active" : ""}`} onClick={() => setTab("fill")} style={{ color: pendingFill.length > 0 ? T.warning : undefined }}>
+            ⏳ A Preencher {pendingFill.length > 0 && `(${pendingFill.length})`}
+          </button>
         </div>
         <button className="btn btn-primary" onClick={openNew}>+ Agendar</button>
       </div>
@@ -910,8 +1180,10 @@ function AppointmentsPage({ ctx }) {
             <tbody>
               {list.length === 0 && <tr><td colSpan={8}><div className="empty">Nenhum agendamento</div></td></tr>}
               {list.map((a) => {
-                const p = patients.find((x) => x.id === a.patientId);
-                const s = services.find((x) => x.id === a.serviceId);
+                const p = patients.find((x) => String(x.id) === String(a.patientId));
+                const s = services.find((x) => String(x.id) === String(a.serviceId));
+                const statusInfo = apptStatusInfo(a);
+                const isPastScheduled = a.status === "scheduled" && a.date < todayStr;
                 return (
                   <tr key={a.id}>
                     <td>{fmtDate(a.date)}</td>
@@ -920,17 +1192,31 @@ function AppointmentsPage({ ctx }) {
                     <td><span className={`badge ${a.appointmentType === "avaliacao" ? "badge-warning" : "badge-scheduled"}`}>{a.appointmentType === "avaliacao" ? "Avaliação" : "Consulta"}</span></td>
                     <td>{s?.name} {s?.needsReturn && <span className="return-badge">🔄 {s.returnType}</span>}</td>
                     <td style={{ color: T.grey, fontSize: 12 }}>{a.duration || 60}min</td>
-                    <td><span className={`badge badge-${a.status}`}>{a.status === "scheduled" ? "Agendado" : a.status === "done" ? "Realizado" : "Cancelado"}</span></td>
+                    <td><span className={`badge ${statusInfo.badgeClass}`}>{statusInfo.label}</span></td>
                     <td>
-                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
                         {a.status === "scheduled" && (
                           <>
+                            <button className="btn btn-sm btn-primary" onClick={() => openAttendance(a)}>⚡ Preencher</button>
                             <button className="btn btn-sm btn-success" onClick={() => openSale(a)}>💰 Venda</button>
                             <button className="btn btn-sm btn-secondary" onClick={() => openQuotation(a)}>📋 Orçamento</button>
                             <button className="btn btn-sm btn-danger" onClick={() => cancel(a.id)}>✕</button>
                           </>
                         )}
-                        {a.status === "done" && <span className="badge badge-ok">✓ Realizado</span>}
+                        {a.status === "done" && (
+                          <button className="btn btn-sm btn-secondary" onClick={() => openAttendanceView(a)}>👁 Ver</button>
+                        )}
+                        {a.status === "cancelled" && (
+                          confirmDeleteId === a.id ? (
+                            <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                              <span style={{ fontSize: 11, color: T.danger }}>Apagar?</span>
+                              <button className="btn btn-sm btn-danger" onClick={() => deleteAppt(a.id)}>✓ Sim</button>
+                              <button className="btn btn-sm btn-ghost" onClick={() => setConfirmDeleteId(null)}>Não</button>
+                            </div>
+                          ) : (
+                            <button className="btn btn-sm btn-danger" onClick={() => setConfirmDeleteId(a.id)}>🗑 Apagar</button>
+                          )
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -985,7 +1271,8 @@ function AppointmentForm({ ctx, onClose, prefill = {} }) {
   }
 
   async function save() {
-    if (!form.patientId || !form.serviceId) return;
+    if (!form.patientId) return;
+    if (form.appointmentType !== "avaliacao" && !form.serviceId) return;
     setSaving(true);
     try {
       const created = await db.createAppointment({
@@ -1064,12 +1351,12 @@ function AppointmentForm({ ctx, onClose, prefill = {} }) {
           </div>
         </div>
         <div className="form-group">
-          <label>Procedimento</label>
+          <label>Procedimento {form.appointmentType === "avaliacao" && <span style={{ fontWeight: 400, color: T.grey, fontSize: 12 }}>(opcional)</span>}</label>
           <SearchSelect
             options={sortedServices.map((s) => ({ value: s.id, label: s.name }))}
             value={form.serviceId}
             onChange={handleServiceChange}
-            placeholder="Buscar procedimento…"
+            placeholder={form.appointmentType === "avaliacao" ? "Buscar procedimento… (opcional)" : "Buscar procedimento…"}
           />
         </div>
         <div className="form-row form-row-2">
@@ -1163,39 +1450,31 @@ function SalesPage({ ctx }) {
         <div className="table-wrap">
           <table>
             <thead>
-              <tr><th>Data</th><th>Paciente</th><th>Procedimento</th><th>Produto(s)</th><th>Sessão</th><th>Valor</th><th>Pagamento</th><th>Custo</th><th>Lucro</th><th>Ações</th></tr>
+              <tr><th>Data</th><th>Paciente</th><th>Procedimento(s)</th><th>Valor</th><th>Pagamento</th><th>Valor Líquido</th><th>Ações</th></tr>
             </thead>
             <tbody>
-              {filtered.length === 0 && <tr><td colSpan={10}><div className="empty">Nenhuma venda encontrada</div></td></tr>}
+              {filtered.length === 0 && <tr><td colSpan={7}><div className="empty">Nenhuma venda encontrada</div></td></tr>}
               {filtered.map((s) => {
-                const p = patients.find((x) => x.id === s.patientId);
-                const sv = services.find((x) => x.id === s.serviceId);
-                const cost = calcSaleCost(s.products);
+                const p = patients.find((x) => String(x.id) === String(s.patientId));
+                const sv = services.find((x) => String(x.id) === String(s.serviceId));
                 const net = calcNetValue(s);
                 const isPix = s.paymentMethod === "pixInstallment";
                 const allPaid = s.paidInstallments >= s.installments;
-                const sessionTypes = [...new Set(s.products.map((p) => p.sessionType))];
+                const svcLabel = s.saleServices?.length > 0
+                  ? s.saleServices.map((it) => `${it.serviceName}${it.qty > 1 ? ` ×${it.qty}` : ""}`).join(", ")
+                  : (sv?.name || "—");
                 return (
                   <tr key={s.id}>
                     <td style={{ whiteSpace: "nowrap" }}>{fmtDate(s.date)}</td>
                     <td>{p?.name}</td>
-                    <td>
-                      {s.saleServices?.length > 0
-                        ? <span style={{ fontSize: 12 }}>{s.saleServices.map((it) => it.serviceName).join(", ")}</span>
-                        : sv?.name}
+                    <td style={{ fontSize: 13 }}>
+                      {svcLabel}
                       {s.quotationId && (
                         <span className="badge badge-info" style={{ marginLeft: 4, fontSize: 10, cursor: "pointer" }}
                           onClick={() => { const q = ctx.quotations?.find((x) => x.id === s.quotationId); if (q) ctx.setModal({ lg: true, content: <QuotationDetailModal quot={q} ctx={ctx} onClose={() => ctx.setModal(null)} />, onClose: () => ctx.setModal(null) }); }}
                         >📋 Orç.</span>
                       )}
                     </td>
-                    <td style={{ fontSize: 12 }}>
-                      {s.products.map((sp, i) => {
-                        const prod = ctx.products.find((x) => x.id === sp.productId);
-                        return <div key={i}>{prod?.name}: {sp.qty} {prod?.unit}</div>;
-                      })}
-                    </td>
-                    <td>{sessionTypes.map((t) => <span key={t} className="badge badge-grey" style={{ marginRight: 2, fontSize: 11 }}>{sessionLabel[t] || t}</span>)}</td>
                     <td><strong>{fmt(s.price)}</strong></td>
                     <td>
                       <span className={`badge ${s.paymentMethod === "pix" ? "badge-info" : s.paymentMethod === "credit" ? "badge-ok" : "badge-warning"}`}>
@@ -1203,7 +1482,6 @@ function SalesPage({ ctx }) {
                       </span>
                       {isPix && !allPaid && <div><span className="badge badge-warning" style={{ fontSize: 10, marginTop: 2 }}>pendente</span></div>}
                     </td>
-                    <td style={{ color: T.danger }}>{fmt(cost)}</td>
                     <td style={{ color: net >= 0 ? T.success : T.danger, fontWeight: 600 }}>{fmt(net)}</td>
                     <td>
                       <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
@@ -1233,7 +1511,7 @@ function SalesPage({ ctx }) {
 
 // ─── SALE FORM ────────────────────────────────────────────────────────────────
 function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillLocation, editSale, onClose, quotationId, quotationItems }) {
-  const { patients, setPatients, services, products, setSales, setProducts, setAppointments, setPendingReturn, locations } = ctx;
+  const { patients, setPatients, services, products, setSales, setPendingReturn, locations } = ctx;
   const defaultLocation = prefillLocation || (locations || []).find((l) => l.name === "Clínica")?.name || (locations?.[0]?.name || "Clínica");
   const editing = !!editSale;
   const fromQuotation = !editing && Array.isArray(quotationItems) && quotationItems.length > 0;
@@ -1246,9 +1524,25 @@ function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillL
     ? saleServices.filter((i) => i.included).reduce((s, i) => s + (+i.finalPrice || 0), 0)
     : 0;
 
+  // Multi-procedure list for non-quotation sales
+  const initSaleProcedures = () => {
+    if (fromQuotation) return [];
+    if (editing && editSale.saleServices?.length > 0) {
+      return editSale.saleServices.map((sv) => ({
+        serviceId: String(sv.serviceId || ""),
+        serviceName: sv.serviceName || "",
+        qty: String(sv.qty || 1),
+        price: String(sv.finalPrice || sv.price || ""),
+      }));
+    }
+    const firstSvcId = prefillService ? String(prefillService) : (editSale?.serviceId ? String(editSale.serviceId) : "");
+    const firstSvc = services.find((s) => String(s.id) === firstSvcId);
+    return [{ serviceId: firstSvcId, serviceName: firstSvc?.name || "", qty: "1", price: String(editSale?.price || firstSvc?.price || "") }];
+  };
+  const [saleProcedures, setSaleProcedures] = useState(initSaleProcedures);
+
   const [form, setForm] = useState({
     patientId: editSale ? String(editSale.patientId) : (prefillPatient || ""),
-    serviceId: editSale ? String(editSale.serviceId) : (prefillService || fromQuotation && quotationItems[0]?.serviceId || ""),
     professional: editSale?.professional || ctx.user?.name || "Dr. Murilo",
     date: editSale?.date || today(),
     price: editSale?.price || (fromQuotation ? quotationTotal : ""),
@@ -1262,11 +1556,7 @@ function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillL
     downPaymentAmount: editSale?.downPaymentAmount || "",
     downPaymentMethod: editSale?.downPaymentMethod || "pix",
   });
-  const [saleProducts, setSaleProducts] = useState(
-    editSale?.products?.length > 0
-      ? editSale.products.map((sp) => ({ productId: String(sp.productId), qty: String(sp.qty), sessionType: sp.sessionType }))
-      : [{ productId: "", qty: "", sessionType: "initial" }]
-  );
+
   const [showEntry, setShowEntry] = useState(editing && (editSale.downPaymentAmount > 0));
   const [installmentsPreview, setInstallmentsPreview] = useState([]);
   const [showNewPatient, setShowNewPatient] = useState(false);
@@ -1283,12 +1573,12 @@ function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillL
     setForm((f) => ({ ...f, price: total, netAmountEdited: false }));
   }, [saleServices]);
 
-  // Auto-select service price (skip in quotation mode)
-  const selectedService = services.find((s) => s.id === +form.serviceId);
+  // In non-quotation mode: sync form.price with saleProcedures total
   useEffect(() => {
-    if (fromQuotation) return;
-    if (selectedService) setForm((f) => ({ ...f, price: selectedService.price, netAmountEdited: false }));
-  }, [form.serviceId]);
+    if (fromQuotation || editing) return;
+    const total = saleProcedures.reduce((s, sp) => s + (+sp.qty || 0) * (+sp.price || 0), 0);
+    if (total > 0) setForm((f) => ({ ...f, price: total, netAmountEdited: false }));
+  }, [saleProcedures]);
 
   // Auto-calc fee and net when method/brand/installments/price change
   useEffect(() => {
@@ -1351,46 +1641,48 @@ function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillL
   const remainingAmount = (+form.price || 0) - (showEntry ? (+form.downPaymentAmount || 0) : 0);
   const sumMismatch = form.paymentMethod === "pixInstallment" && installmentsPreview.length > 0 && Math.abs(installmentsSum - remainingAmount) > 0.01;
 
-  const productCost = saleProducts.reduce((sum, sp) => {
-    const prod = products.find((x) => String(x.id) === String(sp.productId));
-    return sum + (prod ? prod.avgCost * (+sp.qty || 0) : 0);
-  }, 0);
   const feeAmt = (+form.price || 0) - (+form.netAmount || 0);
-  const netValue = (+form.netAmount || 0) - productCost;
-
-  const stockErrors = saleProducts.filter((sp) => {
-    if (!sp.productId || !sp.qty) return false;
-    const prod = products.find((x) => String(x.id) === String(sp.productId));
-    return prod && +sp.qty > prod.totalQty;
-  });
+  const netValue = +form.netAmount || 0;
 
   async function save() {
-    if (!form.patientId || !form.serviceId || !form.price) return;
+    if (!form.patientId || !form.price) return;
     if (sumMismatch) return;
-    if (stockErrors.length > 0) return;
-    const validProds = saleProducts.filter((sp) => sp.productId && +sp.qty > 0);
-    const enriched = validProds.map((sp) => {
-      const prod = products.find((x) => String(x.id) === String(sp.productId));
-      return { productId: sp.productId, qty: +sp.qty, costAtSale: prod?.avgCost || 0, sessionType: sp.sessionType };
-    });
-    const effectivePrice = fromQuotation
-      ? saleServices.filter((i) => i.included).reduce((s, i) => s + (+i.finalPrice || 0), 0)
-      : +form.price;
-    const effectiveServiceId = fromQuotation
-      ? (saleServices.find((i) => i.included)?.serviceId || form.serviceId)
-      : form.serviceId;
+
+    // Build saleServices from saleProcedures (non-quotation) or quotation items
+    let svcData, effectiveServiceId, effectivePrice;
+    if (fromQuotation) {
+      const included = saleServices.filter((i) => i.included);
+      svcData = included;
+      effectiveServiceId = included[0]?.serviceId || null;
+      effectivePrice = included.reduce((s, i) => s + (+i.finalPrice || 0), 0);
+    } else {
+      const valid = saleProcedures.filter((sp) => sp.serviceId && +sp.qty > 0);
+      svcData = valid.map((sp) => {
+        const svc = services.find((s) => String(s.id) === String(sp.serviceId));
+        return { serviceId: sp.serviceId, serviceName: svc?.name || sp.serviceName, qty: +sp.qty, price: +sp.price, finalPrice: +sp.price };
+      });
+      effectiveServiceId = svcData[0]?.serviceId || null;
+      effectivePrice = +form.price;
+    }
+
+    if (!effectiveServiceId && svcData.length === 0) return; // need at least one procedure
+
     const saleData = {
       ...form,
-      patientId: form.patientId, serviceId: effectiveServiceId,
-      price: effectivePrice, installments: +form.installments,
-      creditFeeRate: +form.creditFeeRate, netAmount: +form.netAmount,
+      patientId: form.patientId,
+      serviceId: effectiveServiceId,
+      price: effectivePrice,
+      installments: +form.installments,
+      creditFeeRate: +form.creditFeeRate,
+      netAmount: +form.netAmount,
       downPaymentAmount: showEntry ? +form.downPaymentAmount : 0,
       downPaymentMethod: showEntry ? form.downPaymentMethod : "",
       installmentsData: form.paymentMethod === "pixInstallment" ? installmentsPreview : [],
-      products: enriched,
+      products: [],
       quotationId: quotationId || null,
-      saleServices: fromQuotation ? saleServices.filter((i) => i.included) : null,
+      saleServices: svcData,
     };
+
     if (editing) {
       const updated = {
         ...saleData, id: editSale.id,
@@ -1398,7 +1690,7 @@ function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillL
         appointmentId: editSale.appointmentId,
       };
       setSales((prev) => prev.map((s) => s.id === editSale.id ? updated : s));
-      await db.updateSale(updated, enriched);
+      await db.updateSale(updated, []);
     } else {
       const newSale = {
         id: Date.now(), ...saleData,
@@ -1406,35 +1698,19 @@ function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillL
         appointmentId: appointmentId || null,
       };
       setSales((prev) => [...prev, newSale]);
-      // Build qty-consumed map keyed by productId (UUID string)
-      const consumed = enriched.reduce((acc, sp) => {
-        const key = String(sp.productId);
-        acc[key] = (acc[key] || 0) + sp.qty;
-        return acc;
-      }, {});
-      // Deduct from local state
-      setProducts((prev) => prev.map((p) => {
-        const qty = consumed[String(p.id)] || 0;
-        return qty > 0 ? { ...p, totalQty: Math.max(0, p.totalQty - qty) } : p;
-      }));
-      if (appointmentId) setAppointments((prev) => prev.map((a) => a.id === appointmentId ? { ...a, status: "done", saleId: newSale.id } : a));
-      await db.createSale(newSale, enriched);
-      // Persist stock deductions to Supabase
-      for (const p of products) {
-        const qty = consumed[String(p.id)] || 0;
-        if (qty > 0) await db.updateProductStock(p.id, Math.max(0, p.totalQty - qty), p.avgCost);
-      }
-      const svc = services.find((s) => s.id === +form.serviceId);
-      const pat = patients.find((p) => p.id === +form.patientId);
+      await db.createSale(newSale, []);
+      // Check if first procedure needs return
+      const firstSvcId = svcData[0]?.serviceId;
+      const svc = services.find((s) => String(s.id) === String(firstSvcId));
+      const pat = patients.find((p) => String(p.id) === String(form.patientId));
       if (svc?.needsReturn) {
-        const appt = { id: appointmentId || null, patientId: +form.patientId, serviceId: +form.serviceId, date: form.date };
+        const appt = { id: appointmentId || null, patientId: form.patientId, serviceId: firstSvcId, date: form.date };
         setPendingReturn({ appointment: appt, service: svc, patient: pat });
       }
     }
     onClose();
   }
 
-  const sortedProducts = sortByName(products);
   const sortedPatients = sortByName(patients);
   const sortedServices = sortByName(services.filter((s) => s.active));
 
@@ -1467,42 +1743,63 @@ function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillL
           </div>
         )}
 
-        {/* Paciente + Procedimento */}
-        <div className="form-row form-row-2">
-          <div className="form-group">
-            <label>Paciente</label>
-            <SearchSelect
-              options={sortedPatients.map((p) => ({ value: p.id, label: p.name }))}
-              value={form.patientId}
-              onChange={(v) => setForm({ ...form, patientId: v })}
-              placeholder="Buscar paciente…"
-            />
-            {!showNewPatient ? (
+        {/* Paciente */}
+        <div className="form-group">
+          <label>Paciente</label>
+          <SearchSelect
+            options={sortedPatients.map((p) => ({ value: p.id, label: p.name }))}
+            value={form.patientId}
+            onChange={(v) => setForm({ ...form, patientId: v })}
+            placeholder="Buscar paciente…"
+          />
+          {!showNewPatient ? (
+            <button type="button" className="btn btn-ghost btn-sm"
+              style={{ marginTop: 4, fontSize: 12, padding: "3px 8px" }}
+              onClick={() => setShowNewPatient(true)}>+ Novo paciente</button>
+          ) : (
+            <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+              <input className="form-control" value={newPatientName}
+                onChange={(e) => setNewPatientName(e.target.value)}
+                placeholder="Nome do paciente" style={{ flex: 1 }}
+                onKeyDown={(e) => e.key === "Enter" && saveNewPatient()} />
+              <button type="button" className="btn btn-primary btn-sm" onClick={saveNewPatient}>✓</button>
               <button type="button" className="btn btn-ghost btn-sm"
-                style={{ marginTop: 4, fontSize: 12, padding: "3px 8px" }}
-                onClick={() => setShowNewPatient(true)}>+ Novo paciente</button>
-            ) : (
-              <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-                <input className="form-control" value={newPatientName}
-                  onChange={(e) => setNewPatientName(e.target.value)}
-                  placeholder="Nome do paciente" style={{ flex: 1 }}
-                  onKeyDown={(e) => e.key === "Enter" && saveNewPatient()} />
-                <button type="button" className="btn btn-primary btn-sm" onClick={saveNewPatient}>✓</button>
-                <button type="button" className="btn btn-ghost btn-sm"
-                  onClick={() => { setShowNewPatient(false); setNewPatientName(""); }}>✕</button>
-              </div>
-            )}
-          </div>
-          <div className="form-group">
-            <label>Procedimento</label>
-            <SearchSelect
-              options={sortedServices.map((s) => ({ value: s.id, label: s.name }))}
-              value={form.serviceId}
-              onChange={(v) => setForm({ ...form, serviceId: v })}
-              placeholder="Buscar procedimento…"
-            />
-          </div>
+                onClick={() => { setShowNewPatient(false); setNewPatientName(""); }}>✕</button>
+            </div>
+          )}
         </div>
+
+        {/* Procedimentos (non-quotation mode) */}
+        {!fromQuotation && (
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <label style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: "0.06em", color: T.grey, fontWeight: 500 }}>Procedimentos</label>
+              <button className="btn btn-sm btn-secondary" onClick={() => setSaleProcedures((p) => [...p, { serviceId: "", serviceName: "", qty: "1", price: "" }])}>+ Procedimento</button>
+            </div>
+            {saleProcedures.map((sp, i) => (
+              <div key={i} className="product-row">
+                <div style={{ flex: 2 }}>
+                  <SearchSelect
+                    options={sortedServices.map((s) => ({ value: s.id, label: s.name }))}
+                    value={sp.serviceId}
+                    onChange={(v) => {
+                      const svc = services.find((s) => String(s.id) === String(v));
+                      setSaleProcedures((p) => p.map((x, idx) => idx === i ? { ...x, serviceId: String(v), serviceName: svc?.name || "", price: String(svc?.price || x.price) } : x));
+                    }}
+                    placeholder="Buscar procedimento…"
+                  />
+                </div>
+                <input type="number" className="form-control" placeholder="Qtd" style={{ width: 60 }} min={1} value={sp.qty}
+                  onChange={(e) => setSaleProcedures((p) => p.map((x, idx) => idx === i ? { ...x, qty: e.target.value } : x))} />
+                <input type="number" className="form-control" placeholder="Preço R$" style={{ width: 110 }} step="0.01" value={sp.price}
+                  onChange={(e) => setSaleProcedures((p) => p.map((x, idx) => idx === i ? { ...x, price: e.target.value } : x))} />
+                {saleProcedures.length > 1 && (
+                  <button className="btn btn-sm btn-danger" onClick={() => setSaleProcedures((p) => p.filter((_, idx) => idx !== i))}>✕</button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Data + Local */}
         <div className="form-row form-row-2">
@@ -1518,41 +1815,9 @@ function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillL
           </div>
         </div>
 
-        {/* Produtos utilizados */}
-        <div style={{ marginBottom: 16 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <label style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: "0.06em", color: T.grey, fontWeight: 500 }}>Produtos Utilizados <span style={{ color: T.grey, fontWeight: 400, fontSize: 11 }}>(opcional)</span></label>
-            <button className="btn btn-sm btn-secondary" onClick={() => setSaleProducts((p) => [...p, { productId: "", qty: "", sessionType: "initial" }])}>+ Produto</button>
-          </div>
-          {saleProducts.map((sp, i) => {
-            const prod = products.find((x) => String(x.id) === String(sp.productId));
-            const overStock = prod && sp.qty && +sp.qty > prod.totalQty;
-            return (
-              <div key={i}>
-                <div className="product-row">
-                  <select className="form-control" value={sp.productId} onChange={(e) => setSaleProducts((p) => p.map((x, idx) => idx === i ? { ...x, productId: e.target.value } : x))} style={{ flex: 2, borderColor: overStock ? T.danger : undefined }}>
-                    <option value="">Selecione produto...</option>
-                    {sortedProducts.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.totalQty} {p.unit})</option>)}
-                  </select>
-                  <input type="number" className="form-control" placeholder="Qtd" style={{ width: 70, borderColor: overStock ? T.danger : undefined }} value={sp.qty}
-                    onChange={(e) => setSaleProducts((p) => p.map((x, idx) => idx === i ? { ...x, qty: e.target.value } : x))} />
-                  <select className="form-control" value={sp.sessionType} onChange={(e) => setSaleProducts((p) => p.map((x, idx) => idx === i ? { ...x, sessionType: e.target.value } : x))} style={{ flex: 1 }}>
-                    <option value="initial">Inicial</option>
-                    <option value="retoque">Retoque</option>
-                    <option value="manutencao">Manutenção</option>
-                    <option value="outro">Outro</option>
-                  </select>
-                  {saleProducts.length > 1 && <button className="btn btn-sm btn-danger" onClick={() => setSaleProducts((p) => p.filter((_, idx) => idx !== i))}>✕</button>}
-                </div>
-                {overStock && <div style={{ color: T.danger, fontSize: 12, marginTop: 2 }}>Estoque insuficiente — disponível: {prod.totalQty} {prod.unit}</div>}
-              </div>
-            );
-          })}
-        </div>
-
         {/* Valor */}
         <div className="form-group">
-          <label>Valor Cobrado (R$)</label>
+          <label>Valor Cobrado (R$) <span style={{ fontSize: 11, color: T.grey, fontWeight: 400 }}>— auto-calculado ou editável</span></label>
           <input type="number" className="form-control" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value, netAmountEdited: false })} />
         </div>
 
@@ -1671,10 +1936,8 @@ function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillL
             <div className="stat-row"><span className="stat-label">Entrada ({PAYMENT_METHODS.find(m=>m.value===form.downPaymentMethod)?.label})</span><span style={{ color: T.success }}>+{fmt(+form.downPaymentAmount)}</span></div>
           )}
           {feeAmt > 0 && <div className="stat-row"><span className="stat-label">Taxa financeira ({form.creditFeeRate}%)</span><span style={{ color: T.danger }}>-{fmt(feeAmt)}</span></div>}
-          <div className="stat-row"><span className="stat-label">Valor líquido recebido</span><span style={{ fontWeight: 600 }}>{fmt(+form.netAmount || 0)}</span></div>
-          {productCost > 0 && <div className="stat-row"><span className="stat-label">Custo produtos (CM)</span><span style={{ color: T.danger }}>-{fmt(productCost)}</span></div>}
           <div className="stat-row" style={{ borderTop: `2px solid ${T.dark}`, paddingTop: 8, marginTop: 4 }}>
-            <span style={{ fontWeight: 700 }}>Lucro estimado</span>
+            <span style={{ fontWeight: 700 }}>Valor líquido recebido</span>
             <span style={{ fontWeight: 700, color: netValue >= 0 ? T.success : T.danger }}>{fmt(netValue)}</span>
           </div>
         </div>
@@ -1774,9 +2037,208 @@ function PixInstallmentModal({ sale, ctx, onClose }) {
   );
 }
 
+// ─── ATTENDANCE VIEW MODAL ────────────────────────────────────────────────────
+function AttendanceViewModal({ appointment, attendance, ctx, onClose }) {
+  const { patients, services, products } = ctx;
+  const patient = patients.find((p) => String(p.id) === String(appointment.patientId));
+  const svc = services.find((s) => String(s.id) === String(appointment.serviceId));
+
+  return (
+    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <div className="modal-header">
+          <div className="modal-title">👁 Atendimento — {patient?.name}</div>
+          <button className="btn btn-ghost" onClick={onClose}>✕</button>
+        </div>
+        <div className="modal-body">
+          <div className="stat-row"><span className="stat-label">Data do agendamento</span><span>{fmtDate(appointment.date)} às {appointment.time}</span></div>
+          <div className="stat-row"><span className="stat-label">Procedimento</span><span>{svc?.name || "—"}</span></div>
+
+          {!attendance ? (
+            <div className="alert alert-info" style={{ marginTop: 16 }}>Nenhum registro de atendimento encontrado para este agendamento.</div>
+          ) : (
+            <>
+              <div className="stat-row"><span className="stat-label">Data do atendimento</span><span>{fmtDate(attendance.date)}</span></div>
+              {attendance.notes && <div className="stat-row"><span className="stat-label">Observações</span><span style={{ fontSize: 13 }}>{attendance.notes}</span></div>}
+
+              {attendance.procedures?.length > 0 && (
+                <div style={{ marginTop: 16 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8, color: T.teal }}>📋 Procedimentos Realizados</div>
+                  {attendance.procedures.map((p, i) => (
+                    <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid ${T.light}` }}>
+                      <span style={{ fontSize: 13 }}>{p.serviceName || services.find((s) => String(s.id) === String(p.serviceId))?.name || "—"}</span>
+                      <span className="badge badge-ok">{p.qtyUsed}x</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {attendance.products?.length > 0 && (
+                <div style={{ marginTop: 16 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8, color: T.warning }}>📦 Produtos Utilizados</div>
+                  {attendance.products.map((p, i) => {
+                    const prod = products.find((x) => String(x.id) === String(p.productId));
+                    return (
+                      <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid ${T.light}` }}>
+                        <span style={{ fontSize: 13 }}>{prod?.name || "—"}{p.note && <span style={{ color: T.grey, fontSize: 11 }}> — {p.note}</span>}</span>
+                        <span style={{ fontSize: 13, color: T.dark }}>{p.qty} {prod?.unit || ""}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {(!attendance.procedures?.length && !attendance.products?.length) && (
+                <div className="alert alert-info" style={{ marginTop: 12 }}>Atendimento registrado sem procedimentos ou produtos.</div>
+              )}
+            </>
+          )}
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-secondary" onClick={onClose}>Fechar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── ATTENDANCE FORM ──────────────────────────────────────────────────────────
+function AttendanceForm({ appointment, ctx, onClose }) {
+  const { patients, services, products, sales, attendances, setAttendances, setProducts, setAppointments } = ctx;
+  const patient = patients.find((p) => String(p.id) === String(appointment.patientId));
+  const pendingProcedures = calcPendingProcedures(appointment.patientId, sales, attendances);
+
+  const [procedures, setProcedures] = useState(
+    pendingProcedures.map((p) => ({ ...p, qtyToUse: "0" }))
+  );
+  const [usedProducts, setUsedProducts] = useState([{ productId: "", qty: "", note: "" }]);
+  const [notes, setNotes] = useState("");
+  const [date, setDate] = useState(appointment.date);
+  const [saving, setSaving] = useState(false);
+
+  const sortedProducts = sortByName(products);
+
+  async function save() {
+    const procs = procedures.filter((p) => +p.qtyToUse > 0).map((p) => ({
+      serviceId: p.serviceId, serviceName: p.serviceName || (services.find((s) => String(s.id) === String(p.serviceId))?.name || ""), qtyUsed: +p.qtyToUse,
+    }));
+    const prods = usedProducts.filter((p) => p.productId && +p.qty > 0).map((p) => {
+      const prod = products.find((x) => String(x.id) === String(p.productId));
+      return { productId: p.productId, qty: +p.qty, costAtUse: prod?.avgCost || 0, note: p.note };
+    });
+    if (procs.length === 0 && prods.length === 0 && !notes) return;
+    setSaving(true);
+    try {
+      const created = await db.createAttendance(
+        { appointmentId: appointment.id, patientId: appointment.patientId, date, notes },
+        procs, prods, products
+      );
+      setAttendances((prev) => [created, ...prev]);
+      setAppointments((prev) => prev.map((a) => String(a.id) === String(appointment.id) ? { ...a, status: "done" } : a));
+      // Update local product state
+      for (const p of prods) {
+        const prod = products.find((x) => String(x.id) === String(p.productId));
+        if (prod) {
+          const newQty = Math.max(0, prod.totalQty - p.qty);
+          setProducts((prev) => prev.map((x) => String(x.id) === String(prod.id) ? { ...x, totalQty: newQty } : x));
+        }
+      }
+      onClose();
+    } catch (e) {
+      console.error("Erro ao salvar atendimento:", e);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <>
+      <div className="modal-header">
+        <div className="modal-title">⚡ Preenchimento do Atendimento — {patient?.name}</div>
+        <button className="btn btn-ghost" onClick={onClose}>✕</button>
+      </div>
+      <div className="modal-body">
+        <div className="form-group">
+          <label>Data do Atendimento</label>
+          <input type="date" className="form-control" value={date} onChange={(e) => setDate(e.target.value)} />
+        </div>
+
+        {/* Procedimentos Pendentes */}
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 10, color: T.teal }}>📋 Procedimentos Pendentes</div>
+          {pendingProcedures.length === 0 && (
+            <div className="alert alert-info" style={{ display: "block" }}>
+              Nenhum procedimento pendente para este paciente. Você ainda pode registrar produtos utilizados.
+            </div>
+          )}
+          {procedures.map((proc, i) => {
+            const svcName = proc.serviceName || services.find((s) => String(s.id) === String(proc.serviceId))?.name || "Procedimento";
+            return (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: `1px solid ${T.light}` }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 500, fontSize: 14 }}>{svcName}</div>
+                  <div style={{ fontSize: 12, color: T.grey }}>Pendente: <strong>{proc.total}x</strong></div>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <label style={{ fontSize: 12, color: T.grey, fontWeight: 500 }}>Qtd realizada:</label>
+                  <input type="number" className="form-control" style={{ width: 80 }} min={0} max={proc.total} value={proc.qtyToUse}
+                    onChange={(e) => setProcedures((p) => p.map((x, idx) => idx === i ? { ...x, qtyToUse: e.target.value } : x))} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Produtos Utilizados */}
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <div style={{ fontWeight: 600, fontSize: 14, color: T.teal }}>📦 Produtos Utilizados</div>
+            <button className="btn btn-sm btn-secondary" onClick={() => setUsedProducts((p) => [...p, { productId: "", qty: "", note: "" }])}>+ Produto</button>
+          </div>
+          {usedProducts.map((up, i) => {
+            const prod = products.find((x) => String(x.id) === String(up.productId));
+            const overStock = prod && up.qty && +up.qty > prod.totalQty;
+            return (
+              <div key={i}>
+                <div className="product-row">
+                  <select className="form-control" value={up.productId} style={{ flex: 2, borderColor: overStock ? T.danger : undefined }}
+                    onChange={(e) => setUsedProducts((p) => p.map((x, idx) => idx === i ? { ...x, productId: e.target.value } : x))}>
+                    <option value="">Selecione produto...</option>
+                    {sortedProducts.map((p) => <option key={p.id} value={p.id}>{p.name} (Estoque: {p.totalQty} {p.unit})</option>)}
+                  </select>
+                  <input type="number" className="form-control" placeholder="Qtd" style={{ width: 70, borderColor: overStock ? T.danger : undefined }} value={up.qty}
+                    onChange={(e) => setUsedProducts((p) => p.map((x, idx) => idx === i ? { ...x, qty: e.target.value } : x))} />
+                  <input className="form-control" placeholder="Nota opcional" style={{ flex: 1 }} value={up.note}
+                    onChange={(e) => setUsedProducts((p) => p.map((x, idx) => idx === i ? { ...x, note: e.target.value } : x))} />
+                  {usedProducts.length > 1 && (
+                    <button className="btn btn-sm btn-danger" onClick={() => setUsedProducts((p) => p.filter((_, idx) => idx !== i))}>✕</button>
+                  )}
+                </div>
+                {overStock && <div style={{ color: T.danger, fontSize: 12, marginTop: 2 }}>Estoque insuficiente — disponível: {prod.totalQty} {prod.unit}</div>}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Observações */}
+        <div className="form-group">
+          <label>Observações do Atendimento</label>
+          <textarea className="form-control" rows={3} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Evolução, reações, anotações..." />
+        </div>
+      </div>
+      <div className="modal-footer">
+        <button className="btn btn-secondary" onClick={onClose}>Cancelar</button>
+        <button className="btn btn-primary" onClick={save} disabled={saving}>
+          {saving ? "Salvando…" : "✅ Finalizar Atendimento"}
+        </button>
+      </div>
+    </>
+  );
+}
+
 // ─── PATIENTS ─────────────────────────────────────────────────────────────────
 function PatientsPage({ ctx }) {
-  const { patients, setPatients, sales, services, products, setModal } = ctx;
+  const { patients, setPatients, sales, services, products, attendances, setModal } = ctx;
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState(null);
   const [sortField, setSortField] = useState("name");
@@ -1796,7 +2258,7 @@ function PatientsPage({ ctx }) {
   }
 
   function lastVisit(patientId) {
-    const patSales = sales.filter((s) => s.patientId === patientId);
+    const patSales = sales.filter((s) => String(s.patientId) === String(patientId));
     if (patSales.length === 0) return null;
     return patSales.reduce((latest, s) => s.date > latest ? s.date : latest, "");
   }
@@ -1826,11 +2288,11 @@ function PatientsPage({ ctx }) {
   });
 
   if (selected) {
-    const patSales = sales.filter((s) => s.patientId === selected.id);
+    const patSales = sales.filter((s) => String(s.patientId) === String(selected.id));
     const totalSpent = patSales.reduce((s, x) => s + x.price, 0);
     const totalProfit = patSales.reduce((s, x) => s + calcNetValue(x), 0);
-    const sessionLabel = { initial: "Inicial", retoque: "Retoque", manutencao: "Manutenção", outro: "Outro" };
     const lastV = lastVisit(selected.id);
+    const pendingProcs = calcPendingProcedures(selected.id, sales, attendances || []);
     return (
       <div>
         <div style={{ marginBottom: 16 }}><button className="btn btn-secondary" onClick={() => setSelected(null)}>← Voltar</button></div>
@@ -1864,26 +2326,39 @@ function PatientsPage({ ctx }) {
             </div>
           )}
         </div>
+
+        {pendingProcs.length > 0 && (
+          <div className="card" style={{ marginBottom: 20 }}>
+            <div style={{ fontWeight: 600, marginBottom: 12, color: T.warning }}>⏳ Procedimentos Pendentes</div>
+            {pendingProcs.map((p, i) => {
+              const svcName = p.serviceName || services.find((s) => String(s.id) === String(p.serviceId))?.name || "Procedimento";
+              return (
+                <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: `1px solid ${T.light}` }}>
+                  <span>{svcName}</span>
+                  <span className="badge badge-warning">{p.total}x pendente</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
         <div className="card">
           <div className="section-title" style={{ marginBottom: 12 }}>Histórico de Procedimentos</div>
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Data</th><th>Procedimento</th><th>Produto(s)</th><th>Valor</th><th>Lucro</th></tr></thead>
+              <thead><tr><th>Data</th><th>Procedimento(s)</th><th>Valor</th><th>Lucro Líq.</th></tr></thead>
               <tbody>
-                {patSales.length === 0 && <tr><td colSpan={5}><div className="empty">Nenhum procedimento</div></td></tr>}
+                {patSales.length === 0 && <tr><td colSpan={4}><div className="empty">Nenhum procedimento</div></td></tr>}
                 {patSales.slice().sort((a, b) => b.date.localeCompare(a.date)).map((s) => {
-                  const sv = services.find((x) => x.id === s.serviceId);
+                  const sv = services.find((x) => String(x.id) === String(s.serviceId));
                   const net = calcNetValue(s);
+                  const svcLabel = s.saleServices?.length > 0
+                    ? s.saleServices.map((it) => `${it.serviceName}${it.qty > 1 ? ` ×${it.qty}` : ""}`).join(", ")
+                    : (sv?.name || "—");
                   return (
                     <tr key={s.id}>
                       <td>{fmtDate(s.date)}</td>
-                      <td>{sv?.name}</td>
-                      <td style={{ fontSize: 12 }}>
-                        {s.products.map((sp, i) => {
-                          const prod = products.find((x) => x.id === sp.productId);
-                          return <div key={i}>{prod?.name}: {sp.qty} {prod?.unit} <span className="badge badge-grey" style={{ fontSize: 10 }}>{sessionLabel[sp.sessionType] || sp.sessionType}</span></div>;
-                        })}
-                      </td>
+                      <td style={{ fontSize: 13 }}>{svcLabel}</td>
                       <td>{fmt(s.price)}</td>
                       <td style={{ color: T.success, fontWeight: 600 }}>{fmt(net)}</td>
                     </tr>
@@ -2162,7 +2637,7 @@ function StockPage({ ctx }) {
           {suppliers.length === 0 && <div className="empty">Nenhum fornecedor cadastrado</div>}
           <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
             {suppliers.map((sup) => (
-              <li key={sup.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: `1px solid ${T.border}` }}>
+              <li key={sup.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: `1px solid ${T.light}` }}>
                 <span>{sup.name}</span>
                 <button className="btn btn-sm btn-danger" disabled={deletingSupId === sup.id} onClick={() => deleteSupplier(sup)}>🗑</button>
               </li>
@@ -2526,7 +3001,7 @@ function CostForm({ ctx, onClose }) {
 
 
 // ─── MONTHLY CHART ────────────────────────────────────────────────────────────
-function MonthlyChart({ sales, costs }) {
+function MonthlyChart({ sales, costs, attendances = [] }) {
   const now = new Date();
   const defaultFrom = new Date(now.getFullYear(), now.getMonth() - 5, 1).toISOString().slice(0, 7);
   const defaultTo = now.toISOString().slice(0, 7);
@@ -2546,8 +3021,9 @@ function MonthlyChart({ sales, costs }) {
     const label = new Date(cy, cm - 1, 1).toLocaleDateString("pt-BR", { month: "short", year: "2-digit" });
     const mSales = sales.filter((s) => s.date.startsWith(key));
     const mCosts = costs.filter((c) => c.date.startsWith(key));
+    const mAtts = attendances.filter((a) => a.date?.startsWith(key));
     const revenue = mSales.reduce((s, x) => s + x.price, 0);
-    const productCost = mSales.reduce((s, x) => s + calcSaleCost(x.products), 0);
+    const productCost = mAtts.reduce((sum, a) => sum + (a.products || []).reduce((s, p) => s + p.qty * p.costAtUse, 0), 0);
     const fees = mSales.reduce((s, x) => s + (x.paymentMethod === "credit" ? (x.creditFeeRate / 100) * x.price : 0), 0);
     const opCosts = mCosts.reduce((s, c) => s + c.amount, 0);
     const netProfit = revenue - productCost - fees - opCosts;
@@ -2704,32 +3180,55 @@ function MonthlyChart({ sales, costs }) {
 
 // ─── FINANCE ──────────────────────────────────────────────────────────────────
 function FinancePage({ ctx }) {
-  const { sales, costs, services, products } = ctx;
+  const { sales, costs, services, products, attendances } = ctx;
   const [month, setMonth] = useState(today().slice(0, 7));
 
   const mSales = sales.filter((s) => s.date.startsWith(month));
   const mCosts = costs.filter((c) => c.date.startsWith(month));
+  const mAttendances = (attendances || []).filter((a) => a.date?.startsWith(month));
+
   const totalRevenue = mSales.reduce((s, x) => s + x.price, 0);
-  const totalProductCost = mSales.reduce((s, x) => s + calcSaleCost(x.products), 0);
+  // Product cost now comes from attendance_products (actual usage), not sale_products
+  const totalProductCost = mAttendances.reduce((sum, a) =>
+    sum + (a.products || []).reduce((s, p) => s + p.qty * p.costAtUse, 0), 0
+  );
   const totalFees = mSales.reduce((s, x) => s + (x.paymentMethod === "credit" ? (x.creditFeeRate / 100) * x.price : 0), 0);
   const grossProfit = totalRevenue - totalProductCost - totalFees;
   const totalCosts = mCosts.reduce((s, c) => s + c.amount, 0);
   const netProfit = grossProfit - totalCosts;
   const avgTicket = mSales.length > 0 ? totalRevenue / mSales.length : 0;
 
+  // Top services: count from saleServices (multi-procedure) + fallback to serviceId
   const svcCount = {};
-  mSales.forEach((s) => { svcCount[s.serviceId] = (svcCount[s.serviceId] || 0) + 1; });
-  const topServices = Object.entries(svcCount).sort((a, b) => b[1] - a[1]).slice(0, 5)
-    .map(([id, count]) => ({ name: services.find((s) => s.id === +id)?.name || "—", count }));
+  mSales.forEach((s) => {
+    if (s.saleServices?.length > 0) {
+      s.saleServices.forEach((sv) => {
+        const key = String(sv.serviceId || sv.serviceName);
+        svcCount[key] = (svcCount[key] || { name: sv.serviceName, count: 0 });
+        svcCount[key].count += (sv.qty || 1);
+      });
+    } else if (s.serviceId) {
+      const key = String(s.serviceId);
+      svcCount[key] = svcCount[key] || { name: services.find((x) => String(x.id) === key)?.name || "—", count: 0 };
+      svcCount[key].count += 1;
+    }
+  });
+  const topServices = Object.values(svcCount).sort((a, b) => b.count - a.count).slice(0, 5);
 
   const byPayment = {};
   mSales.forEach((s) => { byPayment[s.paymentMethod] = (byPayment[s.paymentMethod] || 0) + s.price; });
   const payLabel = { pix: "Pix", credit: "Crédito", pixInstallment: "Pix Parcelado", cash: "Dinheiro" };
 
+  // Top products from attendance_products (actual usage)
   const prodConsumption = {};
-  mSales.forEach((s) => s.products.forEach((sp) => { prodConsumption[sp.productId] = (prodConsumption[sp.productId] || 0) + sp.qty; }));
+  mAttendances.forEach((a) => {
+    (a.products || []).forEach((sp) => {
+      const key = String(sp.productId);
+      prodConsumption[key] = (prodConsumption[key] || 0) + sp.qty;
+    });
+  });
   const topProducts = Object.entries(prodConsumption).sort((a, b) => b[1] - a[1]).slice(0, 5)
-    .map(([id, qty]) => { const p = products.find((x) => x.id === +id); return { name: p?.name || "—", qty, unit: p?.unit || "" }; });
+    .map(([id, qty]) => { const p = products.find((x) => String(x.id) === id); return { name: p?.name || "—", qty, unit: p?.unit || "" }; });
 
   return (
     <div>
@@ -2737,10 +3236,10 @@ function FinancePage({ ctx }) {
         <label style={{ fontSize: 13, color: T.grey, fontWeight: 500 }}>Mês (detalhes):</label>
         <input type="month" className="form-control" style={{ width: 200 }} value={month} onChange={(e) => setMonth(e.target.value)} />
       </div>
-      <MonthlyChart sales={sales} costs={costs} />
+      <MonthlyChart sales={sales} costs={costs} attendances={attendances || []} />
       <div className="grid-4">
         <MetricCard icon="💰" title="Faturamento" value={fmt(totalRevenue)} sub={`${mSales.length} vendas`} />
-        <MetricCard icon="📦" title="Custo Produtos" value={fmt(totalProductCost)} sub="custo médio" color={T.danger} />
+        <MetricCard icon="📦" title="Custo Produtos" value={fmt(totalProductCost)} sub="produtos usados em atendimentos" color={T.danger} />
         <MetricCard icon="✅" title="Lucro Bruto" value={fmt(grossProfit)} sub="após produtos e taxas" color={grossProfit >= 0 ? T.success : T.danger} />
         <MetricCard icon="🏆" title="Lucro Líquido" value={fmt(netProfit)} sub="após operacional" color={netProfit >= 0 ? T.success : T.danger} />
         <MetricCard icon="🎯" title="Ticket Médio" value={fmt(avgTicket)} sub={`${mSales.length} atendimentos no mês`} color="#f59e0b" />
@@ -2749,7 +3248,7 @@ function FinancePage({ ctx }) {
         <div className="card">
           <div className="section-title" style={{ marginBottom: 16 }}>📊 DRE Simplificado</div>
           <div className="stat-row"><span className="stat-label">Faturamento bruto</span><span className="stat-value">{fmt(totalRevenue)}</span></div>
-          <div className="stat-row"><span className="stat-label">(-) Custo de produtos (CM)</span><span className="stat-value" style={{ color: T.danger }}>-{fmt(totalProductCost)}</span></div>
+          <div className="stat-row"><span className="stat-label">(-) Custo de produtos usados</span><span className="stat-value" style={{ color: T.danger }}>-{fmt(totalProductCost)}</span></div>
           <div className="stat-row"><span className="stat-label">(-) Taxas financeiras</span><span className="stat-value" style={{ color: T.danger }}>-{fmt(totalFees)}</span></div>
           <div className="stat-row"><span style={{ fontWeight: 700 }}>= Lucro Bruto</span><span className="stat-value" style={{ fontWeight: 700, color: grossProfit >= 0 ? T.success : T.danger }}>{fmt(grossProfit)}</span></div>
           <div className="stat-row"><span className="stat-label">(-) Custos operacionais</span><span className="stat-value" style={{ color: T.danger }}>-{fmt(totalCosts)}</span></div>
@@ -2767,6 +3266,7 @@ function FinancePage({ ctx }) {
               <span style={{ fontSize: 14 }}>#{i + 1} {s.name}</span><span className="badge badge-info">{s.count}x</span>
             </div>
           ))}
+          {topServices.length === 0 && mSales.length > 0 && <div style={{ fontSize: 12, color: T.grey, marginTop: 4 }}>Registre atendimentos com procedimentos para ver dados.</div>}
           <hr className="divider" />
           <div className="section-title" style={{ marginBottom: 12 }}>📦 Produtos Mais Consumidos</div>
           {topProducts.length === 0 ? <div className="empty" style={{ padding: "10px 0" }}>Sem dados</div> : topProducts.map((p, i) => (

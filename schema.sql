@@ -166,6 +166,53 @@ CREATE TABLE IF NOT EXISTS suppliers (
 ALTER TABLE suppliers ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "auth users" ON suppliers FOR ALL USING (auth.role() = 'authenticated');
 
+-- ── Atendimentos ──────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS attendances (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  appointment_id uuid NOT NULL REFERENCES appointments(id),
+  patient_id uuid NOT NULL REFERENCES patients(id),
+  date date NOT NULL,
+  notes text DEFAULT '',
+  created_at timestamptz DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS attendance_procedures (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  attendance_id uuid NOT NULL REFERENCES attendances(id) ON DELETE CASCADE,
+  service_id uuid REFERENCES services(id),
+  service_name text NOT NULL,
+  qty_used numeric NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS attendance_products (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  attendance_id uuid NOT NULL REFERENCES attendances(id) ON DELETE CASCADE,
+  product_id uuid NOT NULL REFERENCES products(id),
+  qty numeric NOT NULL,
+  cost_at_use numeric NOT NULL DEFAULT 0,
+  note text DEFAULT ''
+);
+
+ALTER TABLE attendances ENABLE ROW LEVEL SECURITY;
+ALTER TABLE attendance_procedures ENABLE ROW LEVEL SECURITY;
+ALTER TABLE attendance_products ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "auth users" ON attendances FOR ALL USING (auth.role() = 'authenticated');
+CREATE POLICY "auth users" ON attendance_procedures FOR ALL USING (auth.role() = 'authenticated');
+CREATE POLICY "auth users" ON attendance_products FOR ALL USING (auth.role() = 'authenticated');
+
+-- ── Tarefas ───────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS tasks (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  title text NOT NULL,
+  description text DEFAULT '',
+  urgency text DEFAULT 'normal',
+  due_date date,
+  sort_order integer DEFAULT 0,
+  created_at timestamptz DEFAULT now()
+);
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "auth users" ON tasks FOR ALL USING (auth.role() = 'authenticated');
+
 -- ── Migrations (run these on existing DB) ────────────────────────────────────
 -- ALTER TABLE appointments ADD COLUMN IF NOT EXISTS duration integer DEFAULT 60;
 -- ALTER TABLE appointments ADD COLUMN IF NOT EXISTS appointment_type text DEFAULT 'consulta';

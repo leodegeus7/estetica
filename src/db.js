@@ -186,7 +186,7 @@ export async function fetchAppointments() {
 
 export async function createAppointment(a) {
   const { data, error } = await supabase.from("appointments").insert({
-    patient_id: a.patientId, service_id: a.serviceId,
+    patient_id: a.patientId, service_id: a.serviceId || null,
     date: a.date, time: a.time, status: "scheduled", sale_id: null,
     location: a.location || "Clínica",
     duration: a.duration || 60,
@@ -208,6 +208,11 @@ export async function updateAppointmentStatus(id, status, saleId) {
 
 export async function cancelAppointment(id) {
   const { error } = await supabase.from("appointments").update({ status: "cancelled" }).eq("id", id);
+  if (error) throw error;
+}
+
+export async function deleteAppointment(id) {
+  const { error } = await supabase.from("appointments").delete().eq("id", id);
   if (error) throw error;
 }
 
@@ -457,5 +462,239 @@ export async function updateQuotation(q, items) {
 
 export async function updateQuotationStatus(id, status) {
   const { error } = await supabase.from("quotations").update({ status }).eq("id", id);
+  if (error) throw error;
+}
+
+// ── attendances ───────────────────────────────────────────────────────────────
+function mapAttendance(row) {
+  return {
+    id: row.id,
+    appointmentId: row.appointment_id,
+    patientId: row.patient_id,
+    date: row.date,
+    notes: row.notes || "",
+    createdAt: row.created_at,
+    procedures: (row.attendance_procedures || []).map((p) => ({
+      id: p.id,
+      serviceId: p.service_id,
+      serviceName: p.service_name,
+      qtyUsed: p.qty_used,
+    })),
+    products: (row.attendance_products || []).map((p) => ({
+      id: p.id,
+      productId: p.product_id,
+      qty: p.qty,
+      costAtUse: p.cost_at_use,
+      note: p.note || "",
+    })),
+  };
+}
+
+export async function fetchAttendances() {
+  const { data, error } = await supabase
+    .from("attendances")
+    .select("*, attendance_procedures(*), attendance_products(*)")
+    .order("date", { ascending: false });
+  if (error) throw error;
+  return data.map(mapAttendance);
+}
+
+export async function createAttendance(attendance, procedures, products, currentProducts) {
+  // 1. Insert attendance record
+  const { data, error } = await supabase
+    .from("attendances")
+    .insert({
+      appointment_id: attendance.appointmentId,
+      patient_id: attendance.patientId,
+      date: attendance.date,
+      notes: attendance.notes || "",
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  const id = data.id;
+
+  // 2. Insert procedures
+  if (procedures?.length > 0) {
+    const { error: pe } = await supabase.from("attendance_procedures").insert(
+      procedures.map((p) => ({
+        attendance_id: id,
+        service_id: p.serviceId || null,
+        service_name: p.serviceName,
+        qty_used: p.qtyUsed,
+      }))
+    );
+    if (pe) throw pe;
+  }
+
+  // 3. Insert products + deduct stock
+  if (products?.length > 0) {
+    const { error: ppe } = await supabase.from("attendance_products").insert(
+      products.map((p) => ({
+        attendance_id: id,
+        product_id: p.productId,
+        qty: p.qty,
+        cost_at_use: p.costAtUse,
+        note: p.note || "",
+      }))
+    );
+    if (ppe) throw ppe;
+
+    // Deduct stock for each product
+    for (const p of products) {
+      const prod = (currentProducts || []).find((x) => String(x.id) === String(p.productId));
+      if (prod) {
+        const newQty = Math.max(0, prod.totalQty - p.qty);
+        await updateProductStock(p.productId, newQty, prod.avgCost);
+      }
+    }
+  }
+
+  // 4. Mark appointment as done
+  if (attendance.appointmentId) {
+    await updateAppointmentStatus(attendance.appointmentId, "done", null);
+  }
+
+  // Return full record
+  const { data: full, error: fe } = await supabase
+    .from("attendances")
+    .select("*, attendance_procedures(*), attendance_products(*)")
+    .eq("id", id)
+    .single();
+  if (fe) throw fe;
+  return mapAttendance(full);
+}
+
+export async function updateAttendance(attendance, procedures, products, oldAttendance, currentProducts) {
+  // 1. Update attendance record
+  const { error } = await supabase
+    .from("attendances")
+    .update({ date: attendance.date, notes: attendance.notes || "" })
+    .eq("id", attendance.id);
+  if (error) throw error;
+
+  // 2. Replace procedures
+  await supabase.from("attendance_procedures").delete().eq("attendance_id", attendance.id);
+  if (procedures?.length > 0) {
+    const { error: pe } = await supabase.from("attendance_procedures").insert(
+      procedures.map((p) => ({
+        attendance_id: attendance.id,
+        service_id: p.serviceId || null,
+        service_name: p.serviceName,
+        qty_used: p.qtyUsed,
+      }))
+    );
+    if (pe) throw pe;
+  }
+
+  // 3. Revert old product stock, then apply new
+  for (const p of (oldAttendance?.products || [])) {
+    const prod = (currentProducts || []).find((x) => String(x.id) === String(p.productId));
+    if (prod) {
+      const revertedQty = prod.totalQty + p.qty;
+      await updateProductStock(p.productId, revertedQty, prod.avgCost);
+    }
+  }
+  await supabase.from("attendance_products").delete().eq("attendance_id", attendance.id);
+  if (products?.length > 0) {
+    const { error: ppe } = await supabase.from("attendance_products").insert(
+      products.map((p) => ({
+        attendance_id: attendance.id,
+        product_id: p.productId,
+        qty: p.qty,
+        cost_at_use: p.costAtUse,
+        note: p.note || "",
+      }))
+    );
+    if (ppe) throw ppe;
+    // Refresh currentProducts after revert for accurate deduction
+    for (const p of products) {
+      const prod = (currentProducts || []).find((x) => String(x.id) === String(p.productId));
+      if (prod) {
+        const newQty = Math.max(0, prod.totalQty + (oldAttendance?.products?.find((op) => String(op.productId) === String(p.productId))?.qty || 0) - p.qty);
+        await updateProductStock(p.productId, newQty, prod.avgCost);
+      }
+    }
+  }
+}
+
+export async function deleteAttendance(id, appointmentId, attendanceProducts, currentProducts) {
+  // 1. Revert stock for each product
+  for (const p of (attendanceProducts || [])) {
+    const prod = (currentProducts || []).find((x) => String(x.id) === String(p.productId));
+    if (prod) {
+      const revertedQty = prod.totalQty + p.qty;
+      await updateProductStock(p.productId, revertedQty, prod.avgCost);
+    }
+  }
+
+  // 2. Delete attendance (cascades to procedures + products)
+  const { error } = await supabase.from("attendances").delete().eq("id", id);
+  if (error) throw error;
+
+  // 3. Revert appointment to scheduled
+  if (appointmentId) {
+    await updateAppointmentStatus(appointmentId, "scheduled", null);
+  }
+}
+
+// ── tasks ─────────────────────────────────────────────────────────────────────
+export async function fetchTasks() {
+  const { data, error } = await supabase
+    .from("tasks")
+    .select("*")
+    .order("sort_order", { ascending: true })
+    .order("created_at", { ascending: true });
+  if (error) throw error;
+  return data.map((t) => ({
+    id: t.id,
+    title: t.title,
+    description: t.description || "",
+    urgency: t.urgency || "normal",
+    dueDate: t.due_date || null,
+    sortOrder: t.sort_order,
+    createdAt: t.created_at,
+  }));
+}
+
+export async function createTask(task) {
+  const { data, error } = await supabase
+    .from("tasks")
+    .insert({
+      title: task.title,
+      description: task.description || "",
+      urgency: task.urgency || "normal",
+      due_date: task.dueDate || null,
+      sort_order: task.sortOrder || 0,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return { id: data.id, title: data.title, description: data.description, urgency: data.urgency, dueDate: data.due_date, sortOrder: data.sort_order, createdAt: data.created_at };
+}
+
+export async function updateTask(task) {
+  const { error } = await supabase
+    .from("tasks")
+    .update({
+      title: task.title,
+      description: task.description || "",
+      urgency: task.urgency || "normal",
+      due_date: task.dueDate || null,
+    })
+    .eq("id", task.id);
+  if (error) throw error;
+  return task;
+}
+
+export async function updateTaskOrder(tasks) {
+  // Batch update sort_order for all tasks
+  for (const t of tasks) {
+    await supabase.from("tasks").update({ sort_order: t.sortOrder }).eq("id", t.id);
+  }
+}
+
+export async function deleteTask(id) {
+  const { error } = await supabase.from("tasks").delete().eq("id", id);
   if (error) throw error;
 }
