@@ -454,6 +454,7 @@ function MainApp({ user, onLogout }) {
   const [quotations, setQuotations] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
   const [attendances, setAttendances] = useState([]);
+  const [manualExits, setManualExits] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [modal, setModal] = useState(null);
   const [pendingReturn, setPendingReturn] = useState(null);
@@ -473,7 +474,8 @@ function MainApp({ user, onLogout }) {
       db.fetchSuppliers().catch(() => []),
       db.fetchAttendances().catch(() => []),
       db.fetchTasks().catch(() => []),
-    ]).then(([locs, prods, stock, svcs, pats, sls, cts, appts, quots, supps, atts, tsks]) => {
+      db.fetchManualExits().catch(() => []),
+    ]).then(([locs, prods, stock, svcs, pats, sls, cts, appts, quots, supps, atts, tsks, mexits]) => {
       setLocations(locs.length > 0 ? locs : INIT_LOCATIONS);
       setProducts(prods);
       setStockEntries(stock);
@@ -486,6 +488,7 @@ function MainApp({ user, onLogout }) {
       setSuppliers(supps || []);
       setAttendances(atts || []);
       setTasks(tsks || []);
+      setManualExits(mexits || []);
       setDataLoading(false);
     }).catch((err) => {
       console.error("Erro ao carregar dados:", err);
@@ -506,6 +509,7 @@ function MainApp({ user, onLogout }) {
     quotations, setQuotations,
     suppliers, setSuppliers,
     attendances, setAttendances,
+    manualExits, setManualExits,
     tasks, setTasks,
     db,
   };
@@ -763,6 +767,17 @@ function TasksWidget({ ctx }) {
     } catch (e) { console.error(e); }
   }
 
+  async function toggleCompleted(e, task) {
+    e.stopPropagation();
+    const updated = { ...task, completed: !task.completed };
+    setTasks((prev) => prev.map((t) => t.id === task.id ? updated : t));
+    try { await db.updateTask(updated); } catch (err) { console.error(err); }
+  }
+
+  const pendingTasks = tasks.filter((t) => !t.completed);
+  const doneTasks = tasks.filter((t) => t.completed);
+  const sortedTasks = [...pendingTasks, ...doneTasks];
+
   return (
     <div className="card" style={{ height: "fit-content" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
@@ -770,33 +785,46 @@ function TasksWidget({ ctx }) {
         <button className="btn btn-sm btn-primary" onClick={() => setShowForm(true)}>+ Tarefa</button>
       </div>
       {tasks.length === 0 && <div className="empty" style={{ padding: "20px 0" }}>Nenhuma tarefa pendente</div>}
-      {tasks.map((task, i) => {
-        const isOverdue = task.dueDate && task.dueDate < today();
+      {sortedTasks.map((task, i) => {
+        const isOverdue = task.dueDate && task.dueDate < today() && !task.completed;
+        const origIndex = tasks.indexOf(task);
         return (
           <div key={task.id}
-            draggable
-            onDragStart={() => onDragStart(i)}
-            onDragOver={(e) => onDragOver(e, i)}
-            onDrop={() => onDrop(i)}
+            draggable={!task.completed}
+            onDragStart={() => !task.completed && onDragStart(origIndex)}
+            onDragOver={(e) => !task.completed && onDragOver(e, origIndex)}
+            onDrop={() => !task.completed && onDrop(origIndex)}
             onClick={() => setSelected(task)}
             style={{
               cursor: "pointer", padding: "10px 0",
               borderBottom: `1px solid ${T.light}`,
-              borderTop: dragOver === i ? `2px solid ${T.blue}` : undefined,
+              borderTop: dragOver === origIndex && !task.completed ? `2px solid ${T.blue}` : undefined,
               display: "flex", justifyContent: "space-between", alignItems: "center",
-              opacity: dragItem.current === i ? 0.5 : 1,
+              opacity: task.completed ? 0.55 : 1,
             }}>
-            <div>
-              <div style={{ fontWeight: 500, fontSize: 13.5 }}>{task.title}</div>
-              {task.dueDate && (
-                <div style={{ fontSize: 11, color: isOverdue ? T.danger : T.grey, marginTop: 2 }}>
-                  📅 {fmtDate(task.dueDate)}{isOverdue && " — vencida"}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
+              <span
+                onClick={(e) => toggleCompleted(e, task)}
+                title={task.completed ? "Desmarcar" : "Marcar como concluída"}
+                style={{ fontSize: 17, lineHeight: 1, flexShrink: 0, cursor: "pointer" }}>
+                {task.completed ? "✅" : "☐"}
+              </span>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 500, fontSize: 13.5, textDecoration: task.completed ? "line-through" : "none", color: task.completed ? T.grey : T.dark }}>
+                  {task.title}
                 </div>
-              )}
+                {task.dueDate && !task.completed && (
+                  <div style={{ fontSize: 11, color: isOverdue ? T.danger : T.grey, marginTop: 2 }}>
+                    📅 {fmtDate(task.dueDate)}{isOverdue && " — vencida"}
+                  </div>
+                )}
+              </div>
             </div>
-            <span style={{ fontSize: 11, color: urgencyColor[task.urgency] || T.grey, fontWeight: 600, whiteSpace: "nowrap", marginLeft: 8 }}>
-              {urgencyLabel[task.urgency] || task.urgency}
-            </span>
+            {!task.completed && (
+              <span style={{ fontSize: 11, color: urgencyColor[task.urgency] || T.grey, fontWeight: 600, whiteSpace: "nowrap", marginLeft: 8 }}>
+                {urgencyLabel[task.urgency] || task.urgency}
+              </span>
+            )}
           </div>
         );
       })}
@@ -1764,13 +1792,13 @@ function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillL
       setSales((prev) => prev.map((s) => s.id === editSale.id ? updated : s));
       await db.updateSale(updated, []);
     } else {
-      const newSale = {
-        id: Date.now(), ...saleData,
+      const newSaleData = {
+        ...saleData,
         paidInstallments: form.paymentMethod === "pixInstallment" ? 0 : +form.installments,
         appointmentId: appointmentId || null,
       };
-      setSales((prev) => [...prev, newSale]);
-      await db.createSale(newSale, []);
+      const realId = await db.createSale(newSaleData, []);
+      setSales((prev) => [...prev, { ...newSaleData, id: realId }]);
       // Check if first procedure needs return
       const firstSvcId = svcData[0]?.serviceId;
       const svc = services.find((s) => String(s.id) === String(firstSvcId));
@@ -2111,9 +2139,38 @@ function PixInstallmentModal({ sale, ctx, onClose }) {
 
 // ─── ATTENDANCE VIEW MODAL ────────────────────────────────────────────────────
 function AttendanceViewModal({ appointment, attendance, ctx, onClose }) {
-  const { patients, services, products } = ctx;
+  const { patients, services, products, setAttendances, setAppointments, setProducts } = ctx;
   const patient = patients.find((p) => String(p.id) === String(appointment.patientId));
   const svc = services.find((s) => String(s.id) === String(appointment.serviceId));
+  const [confirmUndo, setConfirmUndo] = useState(false);
+  const [undoing, setUndoing] = useState(false);
+
+  async function undoAttendance() {
+    setUndoing(true);
+    try {
+      await db.deleteAttendance(
+        attendance.id,
+        attendance.appointmentId,
+        attendance.products,
+        products
+      );
+      // Revert products locally
+      setProducts((prev) => prev.map((p) => {
+        const used = attendance.products?.find((x) => String(x.productId) === String(p.id));
+        return used ? { ...p, totalQty: p.totalQty + used.qty } : p;
+      }));
+      // Revert appointment to scheduled
+      setAppointments((prev) => prev.map((a) =>
+        String(a.id) === String(attendance.appointmentId) ? { ...a, status: "scheduled" } : a
+      ));
+      // Remove attendance from state
+      setAttendances((prev) => prev.filter((a) => a.id !== attendance.id));
+      onClose();
+    } catch (e) {
+      console.error("Erro ao desfazer atendimento:", e);
+      setUndoing(false);
+    }
+  }
 
   return (
     <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
@@ -2166,7 +2223,26 @@ function AttendanceViewModal({ appointment, attendance, ctx, onClose }) {
             </>
           )}
         </div>
-        <div className="modal-footer">
+        <div className="modal-footer" style={{ justifyContent: "space-between" }}>
+          <div>
+            {attendance && !confirmUndo && (
+              <button className="btn btn-danger" onClick={() => setConfirmUndo(true)} disabled={undoing}>
+                🗑 Desfazer Atendimento
+              </button>
+            )}
+            {attendance && confirmUndo && (
+              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                <span style={{ fontSize: 12, color: T.danger }}>
+                  {attendance.products?.length > 0 && "⚠️ Os produtos utilizados voltarão ao estoque. "}
+                  Confirmar?
+                </span>
+                <button className="btn btn-sm btn-danger" onClick={undoAttendance} disabled={undoing}>
+                  {undoing ? "…" : "✓ Sim"}
+                </button>
+                <button className="btn btn-sm btn-ghost" onClick={() => setConfirmUndo(false)} disabled={undoing}>Não</button>
+              </div>
+            )}
+          </div>
           <button className="btn btn-secondary" onClick={onClose}>Fechar</button>
         </div>
       </div>
@@ -2630,9 +2706,101 @@ function PatientForm({ ctx, patient, onClose }) {
   );
 }
 
+// ─── MANUAL EXIT FORM ────────────────────────────────────────────────────────
+function ManualExitForm({ ctx, onClose }) {
+  const { products, setProducts, manualExits, setManualExits } = ctx;
+  const [form, setForm] = useState({ productId: "", qty: "", date: today(), reason: "" });
+  const [saving, setSaving] = useState(false);
+
+  const sortedProducts = sortByName(products);
+
+  async function save() {
+    if (!form.productId || !form.qty || +form.qty <= 0) return;
+    const prod = products.find((p) => String(p.id) === String(form.productId));
+    if (!prod) return;
+    const newQty = Math.max(0, prod.totalQty - +form.qty);
+    setSaving(true);
+    try {
+      const created = await db.createManualExit({
+        productId: form.productId,
+        qty: +form.qty,
+        reason: form.reason,
+        date: form.date,
+        newQty,
+        avgCost: prod.avgCost,
+      });
+      setManualExits((prev) => [created, ...prev]);
+      setProducts((prev) => prev.map((p) => String(p.id) === String(prod.id) ? { ...p, totalQty: newQty } : p));
+      onClose();
+    } catch (e) {
+      console.error("Erro ao registrar saída:", e);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <div className="modal-header">
+          <div className="modal-title">↓ Retirada Manual do Estoque</div>
+          <button className="btn btn-ghost" onClick={onClose}>✕</button>
+        </div>
+        <div className="modal-body">
+          <div className="form-group">
+            <label>Produto *</label>
+            <SearchSelect
+              options={sortedProducts.map((p) => ({ value: String(p.id), label: `${p.name} (${p.totalQty} ${p.unit})` }))}
+              value={form.productId}
+              onChange={(v) => setForm({ ...form, productId: v })}
+              placeholder="Selecionar produto…"
+            />
+          </div>
+          <div className="form-row form-row-2">
+            <div className="form-group">
+              <label>Quantidade *</label>
+              <input type="number" className="form-control" min="0.01" step="0.01"
+                value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} />
+            </div>
+            <div className="form-group">
+              <label>Data *</label>
+              <input type="date" className="form-control" value={form.date}
+                onChange={(e) => setForm({ ...form, date: e.target.value })} />
+            </div>
+          </div>
+          <div className="form-group">
+            <label>Motivo (opcional)</label>
+            <textarea className="form-control" rows={2} value={form.reason}
+              onChange={(e) => setForm({ ...form, reason: e.target.value })}
+              placeholder="Ex.: uso interno, extravio, vencimento…" />
+          </div>
+          {form.productId && form.qty && +form.qty > 0 && (() => {
+            const prod = products.find((p) => String(p.id) === String(form.productId));
+            if (!prod) return null;
+            const after = Math.max(0, prod.totalQty - +form.qty);
+            return (
+              <div style={{ fontSize: 12, color: after < (prod.minStock || 0) ? T.danger : T.grey, marginTop: 4 }}>
+                Estoque após retirada: <strong>{after} {prod.unit}</strong>
+                {after < (prod.minStock || 0) && " ⚠️ Abaixo do mínimo!"}
+              </div>
+            );
+          })()}
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-secondary" onClick={onClose}>Cancelar</button>
+          <button className="btn btn-primary" onClick={save} disabled={saving || !form.productId || !form.qty}>
+            {saving ? "Salvando…" : "Registrar Saída"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── STOCK ────────────────────────────────────────────────────────────────────
 function StockPage({ ctx }) {
-  const { products, stockEntries, setModal, setProducts, setStockEntries, suppliers, setSuppliers } = ctx;
+  const { products, stockEntries, setModal, setProducts, setStockEntries, suppliers, setSuppliers,
+          attendances, manualExits, setManualExits, patients } = ctx;
   const [tab, setTab] = useState("stock");
   const [newSupplierName, setNewSupplierName] = useState("");
   const [supplierError, setSupplierError] = useState("");
@@ -2699,6 +2867,41 @@ function StockPage({ ctx }) {
     finally { setDeletingSupId(null); }
   }
 
+  // Build combined exits list
+  const attendanceExits = (attendances || []).flatMap((att) =>
+    (att.products || []).map((p) => ({
+      type: "attendance",
+      date: att.date,
+      productId: p.productId,
+      qty: p.qty,
+      note: p.note || "",
+      attendance: att,
+      patientId: att.patientId,
+    }))
+  );
+  const manualExitsRows = (manualExits || []).map((e) => ({
+    type: "manual",
+    date: e.date,
+    productId: e.productId,
+    qty: e.qty,
+    note: e.reason || "",
+    exitId: e.id,
+    exitObj: e,
+  }));
+  const allExits = [...attendanceExits, ...manualExitsRows]
+    .sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+
+  async function deleteManualExit(exitObj) {
+    const prod = products.find((p) => p.id === exitObj.productId);
+    try {
+      await db.deleteManualExit(exitObj.id, exitObj.productId, exitObj.qty, prod);
+      setManualExits((prev) => prev.filter((e) => e.id !== exitObj.id));
+      if (prod) {
+        setProducts((prev) => prev.map((p) => p.id === prod.id ? { ...p, totalQty: p.totalQty + exitObj.qty } : p));
+      }
+    } catch (e) { console.error(e); }
+  }
+
   return (
     <div>
       <div className="section-header">
@@ -2706,8 +2909,16 @@ function StockPage({ ctx }) {
           <button className={`tab ${tab === "stock" ? "active" : ""}`} onClick={() => setTab("stock")}>Estoque Atual</button>
           <button className={`tab ${tab === "entries" ? "active" : ""}`} onClick={() => setTab("entries")}>Histórico de Compras</button>
           <button className={`tab ${tab === "suppliers" ? "active" : ""}`} onClick={() => setTab("suppliers")}>Fornecedores</button>
+          <button className={`tab ${tab === "exits" ? "active" : ""}`} onClick={() => setTab("exits")}>
+            Saídas {allExits.length > 0 && <span className="badge badge-warning" style={{ marginLeft: 4, fontSize: 10 }}>{allExits.length}</span>}
+          </button>
         </div>
-        {tab !== "suppliers" && <button className="btn btn-primary" onClick={openNew}>+ Novo Produto</button>}
+        {tab === "stock" && <button className="btn btn-primary" onClick={openNew}>+ Novo Produto</button>}
+        {tab === "exits" && (
+          <button className="btn btn-primary" onClick={() => setModal({ content: <ManualExitForm ctx={ctx} onClose={() => setModal(null)} />, onClose: () => setModal(null) })}>
+            ↓ Retirada Manual
+          </button>
+        )}
       </div>
       <div style={{ marginBottom: 20 }} />
 
@@ -2798,6 +3009,70 @@ function StockPage({ ctx }) {
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {tab === "exits" && (
+        <div className="card">
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Data</th>
+                  <th>Produto</th>
+                  <th>Qtd</th>
+                  <th>Tipo</th>
+                  <th>Paciente / Motivo</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {allExits.length === 0 && (
+                  <tr><td colSpan={6}><div className="empty">Nenhuma saída registrada</div></td></tr>
+                )}
+                {allExits.map((exit, i) => {
+                  const prod = products.find((p) => String(p.id) === String(exit.productId));
+                  const pat = exit.patientId ? patients.find((p) => String(p.id) === String(exit.patientId)) : null;
+                  return (
+                    <tr key={i}>
+                      <td>{fmtDate(exit.date)}</td>
+                      <td>{prod?.name || "—"}</td>
+                      <td style={{ fontWeight: 600, color: T.danger }}>-{exit.qty} {prod?.unit || ""}</td>
+                      <td>
+                        {exit.type === "attendance"
+                          ? <span className="badge badge-ok" style={{ fontSize: 11 }}>Atendimento</span>
+                          : <span className="badge badge-warning" style={{ fontSize: 11 }}>Manual</span>
+                        }
+                      </td>
+                      <td style={{ fontSize: 13, color: T.grey }}>
+                        {exit.type === "attendance" ? (pat?.name || "—") : (exit.note || "—")}
+                      </td>
+                      <td>
+                        <div style={{ display: "flex", gap: 4 }}>
+                          {exit.type === "attendance" && exit.attendance && (
+                            <button className="btn btn-sm btn-secondary"
+                              onClick={() => {
+                                const appt = (ctx.appointments || []).find((a) => String(a.id) === String(exit.attendance.appointmentId));
+                                if (appt) setModal({ lg: true, content: <AttendanceViewModal appointment={appt} attendance={exit.attendance} ctx={ctx} onClose={() => setModal(null)} />, onClose: () => setModal(null) });
+                              }}>
+                              👁 Ver
+                            </button>
+                          )}
+                          {exit.type === "manual" && exit.exitObj && (
+                            <button className="btn btn-sm btn-danger"
+                              onClick={() => deleteManualExit(exit.exitObj)}
+                              title="Excluir e reverter estoque">
+                              🗑
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>
@@ -3823,6 +4098,7 @@ function QuotationDetailModal({ quot, ctx, onClose }) {
   const { patients, sales, setQuotations, setModal } = ctx;
   const patient = patients.find((p) => p.id === quot.patientId);
   const linkedSales = (sales || []).filter((s) => s.quotationId === quot.id);
+  const [confirmDel, setConfirmDel] = useState(false);
 
   const statusLabel = { pending: "Pendente", approved: "Aprovado", rejected: "Recusado" };
   const statusBadge = { pending: "badge-warning", approved: "badge-ok", rejected: "badge-danger" };
@@ -3830,6 +4106,16 @@ function QuotationDetailModal({ quot, ctx, onClose }) {
   async function reject() {
     await db.updateQuotationStatus(quot.id, "rejected");
     setQuotations((prev) => prev.map((x) => x.id === quot.id ? { ...x, status: "rejected" } : x));
+    onClose();
+  }
+  async function revertToPending() {
+    await db.updateQuotationStatus(quot.id, "pending");
+    setQuotations((prev) => prev.map((x) => x.id === quot.id ? { ...x, status: "pending" } : x));
+    onClose();
+  }
+  async function deleteQuot() {
+    await db.deleteQuotation(quot.id);
+    setQuotations((prev) => prev.filter((x) => x.id !== quot.id));
     onClose();
   }
   function openEdit() {
@@ -3900,16 +4186,32 @@ function QuotationDetailModal({ quot, ctx, onClose }) {
           </div>
         )}
       </div>
-      <div className="modal-footer" style={{ flexWrap: "wrap", gap: 8 }}>
-        <button className="btn btn-secondary" onClick={() => generateQuotationPDF(quot, patient)}>⬇ PDF</button>
-        {quot.status === "pending" && (
-          <>
-            <button className="btn btn-secondary" onClick={openEdit}>✏️ Editar</button>
-            <button className="btn btn-danger" onClick={reject}>✕ Recusar</button>
-            <button className="btn btn-success" onClick={openApprove}>✓ Aprovar</button>
-          </>
-        )}
-        <button className="btn btn-ghost" onClick={onClose}>Fechar</button>
+      <div className="modal-footer" style={{ flexWrap: "wrap", gap: 8, justifyContent: "space-between" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {!confirmDel ? (
+            <button className="btn btn-danger" onClick={() => setConfirmDel(true)}>🗑 Excluir</button>
+          ) : (
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <span style={{ fontSize: 12, color: T.danger }}>Confirmar exclusão?</span>
+              <button className="btn btn-sm btn-danger" onClick={deleteQuot}>✓ Sim</button>
+              <button className="btn btn-sm btn-ghost" onClick={() => setConfirmDel(false)}>Não</button>
+            </div>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button className="btn btn-secondary" onClick={() => generateQuotationPDF(quot, patient)}>⬇ PDF</button>
+          {quot.status !== "pending" && (
+            <button className="btn btn-secondary" onClick={revertToPending}>↩ Pendente</button>
+          )}
+          {quot.status === "pending" && (
+            <>
+              <button className="btn btn-secondary" onClick={openEdit}>✏️ Editar</button>
+              <button className="btn btn-danger" onClick={reject}>✕ Recusar</button>
+              <button className="btn btn-success" onClick={openApprove}>✓ Aprovar</button>
+            </>
+          )}
+          <button className="btn btn-ghost" onClick={onClose}>Fechar</button>
+        </div>
       </div>
     </>
   );

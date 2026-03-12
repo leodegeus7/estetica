@@ -473,6 +473,11 @@ export async function updateQuotationStatus(id, status) {
   if (error) throw error;
 }
 
+export async function deleteQuotation(id) {
+  const { error } = await supabase.from("quotations").delete().eq("id", id);
+  if (error) throw error;
+}
+
 // ── attendances ───────────────────────────────────────────────────────────────
 function mapAttendance(row) {
   return {
@@ -662,6 +667,7 @@ export async function fetchTasks() {
     dueDate: t.due_date || null,
     sortOrder: t.sort_order,
     createdAt: t.created_at,
+    completed: t.completed || false,
   }));
 }
 
@@ -689,6 +695,7 @@ export async function updateTask(task) {
       description: task.description || "",
       urgency: task.urgency || "normal",
       due_date: task.dueDate || null,
+      completed: task.completed || false,
     })
     .eq("id", task.id);
   if (error) throw error;
@@ -705,4 +712,52 @@ export async function updateTaskOrder(tasks) {
 export async function deleteTask(id) {
   const { error } = await supabase.from("tasks").delete().eq("id", id);
   if (error) throw error;
+}
+
+// ── manual stock exits ────────────────────────────────────────────────────────
+export async function fetchManualExits() {
+  const { data, error } = await supabase
+    .from("stock_manual_exits")
+    .select("*")
+    .order("date", { ascending: false });
+  if (error) throw error;
+  return data.map((e) => ({
+    id: e.id,
+    productId: e.product_id,
+    qty: e.qty,
+    reason: e.reason || "",
+    date: e.date,
+    createdAt: e.created_at,
+  }));
+}
+
+export async function createManualExit(exit) {
+  const { data, error } = await supabase
+    .from("stock_manual_exits")
+    .insert({
+      product_id: exit.productId,
+      qty: exit.qty,
+      reason: exit.reason || "",
+      date: exit.date,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  await updateProductStock(exit.productId, exit.newQty, exit.avgCost);
+  return {
+    id: data.id,
+    productId: data.product_id,
+    qty: data.qty,
+    reason: data.reason || "",
+    date: data.date,
+    createdAt: data.created_at,
+  };
+}
+
+export async function deleteManualExit(id, productId, qty, currentProduct) {
+  const { error } = await supabase.from("stock_manual_exits").delete().eq("id", id);
+  if (error) throw error;
+  if (currentProduct) {
+    await updateProductStock(productId, currentProduct.totalQty + qty, currentProduct.avgCost);
+  }
 }
