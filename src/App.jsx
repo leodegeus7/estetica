@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import jsPDF from "jspdf";
+import html2canvas from "html2canvas";
 import * as db from "./db";
 import { supabase } from "./supabase";
 import { subscribeToPush } from "./usePushNotifications";
@@ -3736,97 +3737,174 @@ function fmtDateLong(d) {
   return dt.toLocaleDateString("pt-BR", { day: "numeric", month: "long", year: "numeric" });
 }
 
-function generateQuotationPDF(quot, patient) {
+function buildQuotationTemplate(quot, patient) {
   const items = quot.items || [];
-  const doc = new jsPDF({ unit: "mm", format: "a4" });
-  const teal = [27, 75, 86];
-  const teal2 = [54, 142, 153];
-  const grey = [80, 80, 80];
-  const W = 190; // content width
-  const ML = 15; // left margin
+  const C1 = "#1B4B56";
+  const C2 = "#368E99";
+  const DARK = "#112933";
 
-  // Title
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(22);
-  doc.setTextColor(...teal);
-  doc.text("Proposta de Tratamento", ML, 28);
-  doc.setFontSize(15);
-  doc.text(patient?.name || "", ML, 40);
+  const itemsHtml = items.map((item) => `
+    <div style="padding:14px 0;border-bottom:1px solid #e5eef0;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+        <div style="font-size:14px;font-weight:400;color:${DARK};line-height:1.5;flex:1;padding-right:20px;">${item.serviceName}</div>
+        <div style="font-size:14px;font-weight:600;color:${DARK};white-space:nowrap;">${fmt(item.price)}</div>
+      </div>
+      ${item.note ? `<div style="font-size:12px;color:#888;margin-top:4px;">${item.note}</div>` : ""}
+    </div>
+  `).join("");
 
-  // Date & validity
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(11);
-  doc.setTextColor(...grey);
-  doc.text(`Curitiba, ${fmtDateLong(quot.date)}`, ML, 53);
-  if (quot.validUntil) {
-    doc.text(`Oferta válida até ${fmtDate(quot.validUntil)}`, ML, 61);
+  const discountHtml = quot.discount > 0 ? `
+    <div style="display:flex;justify-content:space-between;font-size:13px;color:#777;margin-bottom:6px;">
+      <span>Subtotal</span><span>${fmt(quot.total)}</span>
+    </div>
+    <div style="display:flex;justify-content:space-between;font-size:13px;color:#2e9e6b;margin-bottom:10px;">
+      <span>Desconto</span><span>-${fmt(quot.discount)}</span>
+    </div>
+  ` : "";
+
+
+  const expiryDate = (() => {
+    const base = quot.validUntil || quot.date;
+    if (!base) return null;
+    const d = new Date(base + "T12:00:00");
+    if (!quot.validUntil) d.setDate(d.getDate() + 5);
+    return fmtDate(d.toISOString().slice(0, 10));
+  })();
+  const validUntilBadge = expiryDate
+    ? `<div style="display:inline-block;background:#e8f4f5;color:${C1};border:1px solid ${C2};border-radius:6px;padding:4px 12px;font-size:12px;font-weight:600;margin-bottom:20px;">⏰ Proposta válida até ${expiryDate}</div>`
+    : "";
+
+  return `
+    <div style="
+      width:794px;height:1122px;background:#fff;position:relative;overflow:hidden;
+      font-family:'Josefin Sans',sans-serif;box-sizing:border-box;
+    ">
+      <!-- Background watermark: MV circle centered on page -->
+      <img src="/pdf-assets/decor.png" crossorigin="anonymous" style="
+        position:absolute;
+        top:50%;left:50%;
+        transform:translate(-50%,-50%);
+        width:700px;height:700px;
+        object-fit:contain;
+        pointer-events:none;
+        z-index:0;
+      " />
+
+      <!-- HEADER -->
+      <div style="position:relative;z-index:1;padding:32px 56px 0 56px;">
+
+        <!-- Logo centered -->
+        <div style="text-align:center;margin-bottom:18px;">
+          <img src="/pdf-assets/logo.png" crossorigin="anonymous"
+            style="width:320px;height:auto;display:inline-block;" />
+        </div>
+
+        <!-- Contact: right-aligned -->
+        <div style="text-align:right;line-height:1.7;">
+          <div style="font-size:12px;color:${C2};font-weight:600;">+55 41 98836-6745</div>
+          <div style="font-size:11px;color:${DARK};">Av. República Argentina, 2056,</div>
+          <div style="font-size:11px;color:${DARK};">Sala 72 - Água Verde Curitiba &bull; PR</div>
+        </div>
+      </div>
+
+      <!-- Separator -->
+      <div style="position:relative;z-index:1;margin:18px 0 0 0;">
+        <img src="/pdf-assets/separator.png" crossorigin="anonymous"
+          style="width:100%;height:3px;display:block;" />
+      </div>
+
+      <!-- BODY -->
+      <div style="position:relative;z-index:1;padding:40px 56px 0 56px;">
+
+        <!-- Title: "Proposta de Tratamento" -->
+        <div style="font-size:17px;font-weight:700;color:${DARK};margin-bottom:8px;line-height:1.3;">
+          Proposta de Tratamento
+        </div>
+
+        <!-- Validity badge -->
+        ${validUntilBadge}
+
+        <!-- Greeting -->
+        <div style="font-size:13px;color:${DARK};margin-bottom:24px;line-height:1.7;">
+          Prezado(a) <strong>${patient?.name || ""}</strong>,<br/>
+          Segue abaixo a proposta de tratamento elaborada especialmente para você.
+        </div>
+
+        <!-- Items -->
+        <div style="margin-bottom:20px;">${itemsHtml}</div>
+
+        <!-- Total -->
+        <div style="padding-top:8px;">
+          ${discountHtml}
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <span style="font-size:15px;font-weight:700;color:${C1};">Seu Investimento</span>
+            <span style="font-size:18px;font-weight:700;color:${C1};">${fmt(quot.totalWithDiscount)}</span>
+          </div>
+        </div>
+
+        <!-- Date -->
+        <div style="margin-top:28px;font-size:13px;color:${DARK};">
+          Curitiba, ${fmtDateLong(quot.date)}
+        </div>
+      </div>
+
+      <!-- FOOTER -->
+      <div style="position:absolute;bottom:0;left:0;right:0;z-index:1;">
+
+        <!-- CTA -->
+        <div style="text-align:center;font-size:11px;color:${C2};margin-bottom:16px;line-height:1.7;">
+          Qualquer dúvida, entre em contato com:<br/>
+          <strong style="font-size:13px;">+55 41 98836-6745</strong>
+        </div>
+
+        <!-- Signature line + name + CRO -->
+        <div style="text-align:center;padding:0 56px 0 56px;margin-bottom:16px;">
+          <div style="border-top:1px solid #b0c4c9;width:380px;margin:0 auto 14px auto;"></div>
+          <div style="font-size:15px;font-weight:700;color:${C1};letter-spacing:1px;">DR. MURILO DO VALLE</div>
+          <div style="font-size:13px;color:${C2};margin-top:4px;font-weight:600;">CRO 30342</div>
+        </div>
+
+        <!-- Bottom separator -->
+        <img src="/pdf-assets/separator.png" crossorigin="anonymous"
+          style="width:100%;height:3px;display:block;" />
+
+        <!-- Social row: Instagram only -->
+        <div style="
+          display:flex;align-items:center;justify-content:center;
+          gap:8px;padding:14px 0;
+        ">
+          <img src="/pdf-assets/icon-ig.png" crossorigin="anonymous" style="width:22px;height:22px;object-fit:contain;" />
+          <span style="font-size:12px;color:${C2};font-weight:600;">drmurilodovalle</span>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function generateQuotationPDF(quot, patient) {
+  const wrapper = document.createElement("div");
+  wrapper.style.cssText = "position:fixed;top:-99999px;left:-99999px;z-index:-1;width:794px;";
+  wrapper.innerHTML = buildQuotationTemplate(quot, patient);
+  document.body.appendChild(wrapper);
+
+  try {
+    await document.fonts.ready;
+    const canvas = await html2canvas(wrapper.firstElementChild, {
+      scale: 2,
+      useCORS: true,
+      backgroundColor: "#ffffff",
+      width: 794,
+      height: 1122,
+    });
+    const pdf = new jsPDF({ unit: "mm", format: "a4", orientation: "portrait" });
+    const pdfW = pdf.internal.pageSize.getWidth();
+    const pdfH = pdf.internal.pageSize.getHeight();
+    pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, pdfW, pdfH);
+    const patSlug = (patient?.name || "proposta").replace(/\s+/g, "-").toLowerCase();
+    pdf.save(`proposta-${patSlug}.pdf`);
+  } finally {
+    document.body.removeChild(wrapper);
   }
-
-  // Separator line
-  doc.setDrawColor(...teal2);
-  doc.setLineWidth(0.5);
-  doc.line(ML, 67, ML + W, 67);
-
-  // Items
-  let y = 76;
-  items.forEach((item) => {
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(12);
-    doc.setTextColor(...teal);
-    const lines = doc.splitTextToSize(`• ${item.serviceName}`, 140);
-    doc.text(lines, ML + 2, y);
-    doc.setFont("helvetica", "bold");
-    doc.setTextColor(...grey);
-    doc.text(fmt(item.finalPrice), ML + W, y, { align: "right" });
-    y += lines.length * 7;
-    if (item.note) {
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(10);
-      doc.setTextColor(120, 120, 120);
-      const noteLines = doc.splitTextToSize(item.note, 150);
-      doc.text(noteLines, ML + 8, y);
-      y += noteLines.length * 5.5;
-    }
-    y += 5;
-  });
-
-  // Total section
-  y += 3;
-  doc.setDrawColor(...teal);
-  doc.setLineWidth(0.4);
-  doc.line(ML, y, ML + W, y);
-  y += 9;
-
-  if (quot.discount > 0) {
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(11);
-    doc.setTextColor(...grey);
-    doc.text(`Subtotal: ${fmt(quot.total)}`, ML + W, y, { align: "right" });
-    y += 7;
-    doc.text(`Desconto: -${fmt(quot.discount)}`, ML + W, y, { align: "right" });
-    y += 7;
-  }
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(14);
-  doc.setTextColor(...teal);
-  doc.text(`Total: ${fmt(quot.totalWithDiscount)}`, ML + W, y, { align: "right" });
-
-  // Footer
-  const pH = doc.internal.pageSize.height;
-  doc.setDrawColor(180, 180, 180);
-  doc.setLineWidth(0.3);
-  doc.line(65, pH - 48, 145, pH - 48);
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(13);
-  doc.setTextColor(...teal);
-  doc.text("DR. MURILO DO VALLE", 105, pH - 40, { align: "center" });
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(11);
-  doc.setTextColor(...teal2);
-  doc.text("CRO 30342", 105, pH - 33, { align: "center" });
-
-  const patSlug = (patient?.name || "proposta").replace(/\s+/g, "-").toLowerCase();
-  doc.save(`proposta-${patSlug}.pdf`);
 }
 
 // ─── QUOTATIONS PAGE ──────────────────────────────────────────────────────────
@@ -3893,7 +3971,7 @@ function QuotationsPage({ ctx }) {
                     <td>
                       <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                         <button className="btn btn-sm btn-secondary" onClick={() => openDetail(q)}>Ver</button>
-                        <button className="btn btn-sm btn-secondary" onClick={() => generateQuotationPDF(q, p)}>PDF</button>
+                        <button className="btn btn-sm btn-secondary" onClick={async () => { await generateQuotationPDF(q, p); }}>PDF</button>
                         {q.status === "pending" && (
                           <>
                             <button className="btn btn-sm btn-secondary" onClick={() => openEdit(q)}>✏️</button>
@@ -4199,7 +4277,7 @@ function QuotationDetailModal({ quot, ctx, onClose }) {
           )}
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button className="btn btn-secondary" onClick={() => generateQuotationPDF(quot, patient)}>⬇ PDF</button>
+          <button className="btn btn-secondary" onClick={async () => { await generateQuotationPDF(quot, patient); }}>⬇ PDF</button>
           {quot.status !== "pending" && (
             <button className="btn btn-secondary" onClick={revertToPending}>↩ Pendente</button>
           )}
