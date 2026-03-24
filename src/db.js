@@ -250,6 +250,11 @@ export async function createDraftAppointment(draft) {
   };
 }
 
+export async function dismissGoogleDraft(id) {
+  const { error } = await supabase.from("appointments").update({ status: "gcal_dismissed" }).eq("id", id);
+  if (error) throw error;
+}
+
 export async function completeDraftAppointment(id, { patientId, serviceId, appointmentType, duration }) {
   const { error } = await supabase.from("appointments").update({
     patient_id: patientId,

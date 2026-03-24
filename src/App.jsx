@@ -4,8 +4,6 @@ import html2canvas from "html2canvas";
 import * as db from "./db";
 import { supabase } from "./supabase";
 import { subscribeToPush } from "./usePushNotifications";
-import { useGoogleLogin } from "@react-oauth/google";
-import { loadToken, saveToken, clearToken, CALENDAR_SCOPES } from "./googleCalendar";
 import { loadMappings, saveMappings, syncGoogleCalendars } from "./googleCalendarSync";
 
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
@@ -463,7 +461,6 @@ function MainApp({ user, onLogout }) {
   const [modal, setModal] = useState(null);
   const [pendingReturn, setPendingReturn] = useState(null);
   const [dataLoading, setDataLoading] = useState(true);
-  const [gcalToken, setGcalToken] = useState(() => loadToken());
   const [gcalMappings, setGcalMappings] = useState(() => loadMappings());
   const [gcalSyncing, setGcalSyncing] = useState(false);
   const [gcalLastSync, setGcalLastSync] = useState(null);
@@ -505,16 +502,17 @@ function MainApp({ user, onLogout }) {
   }, []);
 
   async function triggerSync() {
-    if (!gcalToken || gcalSyncing) return;
+    if (gcalSyncing) return;
     const validMappings = gcalMappings.filter((m) => m.calendarId && m.location);
     if (validMappings.length === 0) return;
+    const apiKey = import.meta.env.VITE_GOOGLE_API_KEY;
+    if (!apiKey) return;
     setGcalSyncing(true);
     try {
-      const newDrafts = await syncGoogleCalendars(gcalToken.access_token, validMappings);
+      const newDrafts = await syncGoogleCalendars(validMappings);
       if (newDrafts.length > 0) setAppointments((prev) => [...prev, ...newDrafts]);
       setGcalLastSync(new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }));
     } catch (err) {
-      if (err.message?.includes("Token expirado")) setGcalToken(null);
       throw err;
     } finally {
       setGcalSyncing(false);
@@ -522,11 +520,11 @@ function MainApp({ user, onLogout }) {
   }
 
   useEffect(() => {
-    if (dataLoading || !gcalToken) return;
+    if (dataLoading || !import.meta.env.VITE_GOOGLE_API_KEY) return;
     triggerSync();
     const id = setInterval(() => triggerSync(), 5 * 60 * 1000);
     return () => clearInterval(id);
-  }, [dataLoading, gcalToken]);
+  }, [dataLoading]);
 
   const displayName = user?.user_metadata?.name || user?.email?.split("@")[0] || "Usuario";
   const userForCtx = { ...user, name: displayName };
@@ -543,7 +541,6 @@ function MainApp({ user, onLogout }) {
     attendances, setAttendances,
     manualExits, setManualExits,
     tasks, setTasks,
-    gcalToken, setGcalToken,
     gcalMappings, setGcalMappings,
     gcalSyncing, gcalLastSync,
     triggerSync,
@@ -978,7 +975,7 @@ function TaskDetailModal({ task, onDelete, onEdit, onClose }) {
 
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
 function DashboardPage({ ctx }) {
-  const { sales, costs, patients, appointments, products, services, attendances, setModal } = ctx;
+  const { sales, costs, patients, appointments, products, services, attendances, setModal, setPage } = ctx;
   const todayStr = today();
   const curMonth = todayStr.slice(0, 7);
 
@@ -1016,7 +1013,8 @@ function DashboardPage({ ctx }) {
   const birthdaySoon = patients.filter((p) => isBirthdaySoon(p.birthdate, 3));
 
   const pendingFillAppts = appointments.filter((a) => a.status === "scheduled" && a.date < todayStr);
-  const hasAlerts = latePatients.length > 0 || latePix.length > 0 || lowStock.length > 0 || birthdaySoon.length > 0 || pendingFillAppts.length > 0;
+  const pendingDrafts = appointments.filter((a) => a.status === "draft");
+  const hasAlerts = latePatients.length > 0 || latePix.length > 0 || lowStock.length > 0 || birthdaySoon.length > 0 || pendingFillAppts.length > 0 || pendingDrafts.length > 0;
 
   return (
     <div>
@@ -1030,6 +1028,17 @@ function DashboardPage({ ctx }) {
         <div className="card">
           <div className="section-header"><div className="section-title">⚠️ Alertas</div></div>
           {!hasAlerts && <div className="alert alert-success"><div className="alert-content">✅ Nenhum alerta no momento</div></div>}
+
+          {pendingDrafts.length > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              <div className="alert alert-warning" style={{ display: "block" }}>
+                <strong>📅 {pendingDrafts.length} pré-agendamento(s) importados do Google aguardando confirmação</strong>
+                <div style={{ marginTop: 4, fontSize: 12, cursor: "pointer", textDecoration: "underline" }} onClick={() => setPage("appointments")}>
+                  Acesse a Agenda para completar →
+                </div>
+              </div>
+            </div>
+          )}
 
           {pendingFillAppts.length > 0 && (
             <div style={{ marginBottom: 8 }}>
@@ -1192,7 +1201,7 @@ function AppointmentsPage({ ctx }) {
   const todayStr = today();
 
   const drafts = appointments.filter((a) => a.status === "draft");
-  const nonDrafts = appointments.filter((a) => a.status !== "draft");
+  const nonDrafts = appointments.filter((a) => a.status !== "draft" && a.status !== "gcal_dismissed");
   const pendingFill = nonDrafts.filter((a) => a.status === "scheduled" && a.date < todayStr);
 
   const grouped = {
@@ -1200,7 +1209,6 @@ function AppointmentsPage({ ctx }) {
     upcoming: nonDrafts.filter((a) => a.date > todayStr),
     past: nonDrafts.filter((a) => a.date < todayStr),
     fill: pendingFill,
-    drafts,
   };
 
   function openNew() {
@@ -1226,9 +1234,15 @@ function AppointmentsPage({ ctx }) {
     db.cancelAppointment(id).catch(console.error);
   }
   async function deleteAppt(id) {
+    const appt = appointments.find((a) => a.id === id);
     try {
-      await db.unlinkAppointmentFromSales(id);
-      await db.deleteAppointment(id);
+      if (appt?.source === "google") {
+        // Marca como dismissed para bloquear re-importação no próximo sync
+        await db.dismissGoogleDraft(id);
+      } else {
+        await db.unlinkAppointmentFromSales(id);
+        await db.deleteAppointment(id);
+      }
       setAppointments((prev) => prev.filter((a) => a.id !== id));
       setConfirmDeleteId(null);
     } catch (e) {
@@ -1245,6 +1259,36 @@ function AppointmentsPage({ ctx }) {
 
   return (
     <div>
+      {drafts.length > 0 && (
+        <div className="card" style={{ marginBottom: 16, borderLeft: `4px solid ${T.warning}` }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div className="section-title" style={{ margin: 0 }}>📅 Pré-agendamentos ({drafts.length})</div>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>Data</th><th>Hora</th><th>Título</th><th>Local</th><th>Dur.</th><th>Ações</th></tr></thead>
+              <tbody>
+                {drafts.sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time)).map((a) => (
+                  <tr key={a.id} style={{ background: "#fffbf0" }}>
+                    <td>{fmtDate(a.date)}</td>
+                    <td><strong>{a.time}</strong></td>
+                    <td><span style={{ color: T.teal, fontStyle: "italic" }}>{a.draftTitle}</span></td>
+                    <td><span style={{ color: T.grey, fontSize: 12 }}>{a.location}</span></td>
+                    <td style={{ color: T.grey, fontSize: 12 }}>{a.duration || 60}min</td>
+                    <td>
+                      <div style={{ display: "flex", gap: 4 }}>
+                        <button className="btn btn-sm btn-primary" onClick={() => openComplete(a)}>✏️ Completar</button>
+                        <button className="btn btn-sm btn-danger" onClick={() => deleteAppt(a.id)}>🗑</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       <div className="section-header">
         <div className="tabs">
           {[["today", "Hoje"], ["upcoming", "Próximos"], ["past", "Anteriores"]].map(([k, l]) => (
@@ -1252,9 +1296,6 @@ function AppointmentsPage({ ctx }) {
           ))}
           <button className={`tab ${tab === "fill" ? "active" : ""}`} onClick={() => setTab("fill")} style={{ color: pendingFill.length > 0 ? T.warning : undefined }}>
             ⏳ A Preencher {pendingFill.length > 0 && `(${pendingFill.length})`}
-          </button>
-          <button className={`tab ${tab === "drafts" ? "active" : ""}`} onClick={() => setTab("drafts")} style={{ color: drafts.length > 0 ? T.teal : undefined }}>
-            📅 Google {drafts.length > 0 && `(${drafts.length})`}
           </button>
         </div>
         <button className="btn btn-primary" onClick={openNew}>+ Agendar</button>
@@ -1269,24 +1310,17 @@ function AppointmentsPage({ ctx }) {
                 const p = patients.find((x) => String(x.id) === String(a.patientId));
                 const s = services.find((x) => String(x.id) === String(a.serviceId));
                 const statusInfo = apptStatusInfo(a);
-                const isDraft = a.status === "draft";
                 return (
-                  <tr key={a.id} style={isDraft ? { background: "#fffbf0" } : undefined}>
+                  <tr key={a.id}>
                     <td>{fmtDate(a.date)}</td>
                     <td><strong>{a.time}</strong></td>
-                    <td>{isDraft ? <span style={{ color: T.teal, fontStyle: "italic" }}>{a.draftTitle}</span> : p?.name}</td>
-                    <td>{isDraft ? <span style={{ color: T.grey, fontSize: 12 }}>{a.location}</span> : <span className={`badge ${a.appointmentType === "avaliacao" ? "badge-warning" : "badge-scheduled"}`}>{a.appointmentType === "avaliacao" ? "Avaliação" : "Consulta"}</span>}</td>
-                    <td>{isDraft ? <span style={{ color: T.grey, fontSize: 12 }}>—</span> : <>{s?.name} {s?.needsReturn && <span className="return-badge">🔄 {s.returnType}</span>}</>}</td>
+                    <td>{p?.name}</td>
+                    <td><span className={`badge ${a.appointmentType === "avaliacao" ? "badge-warning" : "badge-scheduled"}`}>{a.appointmentType === "avaliacao" ? "Avaliação" : "Consulta"}</span></td>
+                    <td>{s?.name} {s?.needsReturn && <span className="return-badge">🔄 {s.returnType}</span>}</td>
                     <td style={{ color: T.grey, fontSize: 12 }}>{a.duration || 60}min</td>
                     <td><span className={`badge ${statusInfo.badgeClass}`}>{statusInfo.label}</span></td>
                     <td>
                       <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
-                        {isDraft && (
-                          <>
-                            <button className="btn btn-sm btn-primary" onClick={() => openComplete(a)}>✏️ Completar</button>
-                            <button className="btn btn-sm btn-danger" onClick={() => deleteAppt(a.id)}>🗑</button>
-                          </>
-                        )}
                         {a.status === "scheduled" && (
                           <>
                             <button className="btn btn-sm btn-primary" onClick={() => openAttendance(a)}>⚡ Preencher</button>
@@ -4515,23 +4549,10 @@ function ApproveQuotationModal({ quot, ctx, onClose }) {
 // ─── LOCATIONS ─────────────────────────────────────────────────────────────────
 // ─── GOOGLE CALENDAR SETTINGS ─────────────────────────────────────────────────
 function GoogleCalendarSettingsPage({ ctx }) {
-  const { gcalToken, setGcalToken, gcalMappings, setGcalMappings, gcalSyncing, gcalLastSync, triggerSync, locations } = ctx;
+  const { gcalMappings, setGcalMappings, gcalSyncing, gcalLastSync, triggerSync, locations } = ctx;
   const [mappings, setMappings] = useState(gcalMappings);
   const [syncError, setSyncError] = useState("");
-
-  const login = useGoogleLogin({
-    scope: CALENDAR_SCOPES,
-    onSuccess: (tokenResponse) => {
-      const saved = saveToken(tokenResponse);
-      setGcalToken(saved);
-    },
-    onError: (err) => alert("Erro ao conectar Google: " + (err.error_description || err.error)),
-  });
-
-  function disconnect() {
-    clearToken();
-    setGcalToken(null);
-  }
+  const hasApiKey = !!import.meta.env.VITE_GOOGLE_API_KEY;
 
   function updateMapping(i, field, value) {
     const updated = mappings.map((m, idx) => idx === i ? { ...m, [field]: value } : m);
@@ -4555,28 +4576,23 @@ function GoogleCalendarSettingsPage({ ctx }) {
         <div className="section-sub">Importe eventos do Google Calendar como pre-agendamentos</div>
       </div>
 
+      {!hasApiKey && (
+        <div className="alert alert-danger" style={{ marginBottom: 16 }}>
+          <div className="alert-content">⚠️ <strong>VITE_GOOGLE_API_KEY</strong> não configurada no <code>.env.local</code>. Adicione a chave e reinicie o app.</div>
+        </div>
+      )}
+
       <div className="card" style={{ marginBottom: 16 }}>
         <div style={{ padding: "20px 24px" }}>
-          <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 12 }}>Conexão com o Google</div>
-          {gcalToken ? (
-            <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-              <span className="badge badge-ok">✓ Conectado</span>
-              <span style={{ fontSize: 13, color: T.grey }}>Token válido</span>
-              <button className="btn btn-secondary btn-sm" onClick={doSync} disabled={gcalSyncing}>
-                {gcalSyncing ? "Sincronizando..." : "🔄 Sincronizar agora"}
-              </button>
-              <button className="btn btn-ghost btn-sm" onClick={disconnect}>Desconectar</button>
-              {gcalLastSync && <span style={{ fontSize: 12, color: T.grey }}>Última sincronização: {gcalLastSync}</span>}
-              {syncError && <span style={{ fontSize: 12, color: T.danger }}>{syncError}</span>}
-            </div>
-          ) : (
-            <div>
-              <p style={{ fontSize: 13, color: T.grey, marginBottom: 12 }}>Clique em "Conectar" para autorizar o acesso de leitura ao Google Calendar.</p>
-              <button className="btn btn-primary" onClick={() => login()}>
-                🔗 Conectar Google Calendar
-              </button>
-            </div>
-          )}
+          <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 12 }}>Sincronização</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+            {hasApiKey && <span className="badge badge-ok">✓ API Key configurada</span>}
+            <button className="btn btn-secondary btn-sm" onClick={doSync} disabled={gcalSyncing || !hasApiKey}>
+              {gcalSyncing ? "Sincronizando..." : "🔄 Sincronizar agora"}
+            </button>
+            {gcalLastSync && <span style={{ fontSize: 12, color: T.grey }}>Última sync: {gcalLastSync}</span>}
+            {syncError && <span style={{ fontSize: 12, color: T.danger }}>{syncError}</span>}
+          </div>
         </div>
       </div>
 
@@ -4600,11 +4616,6 @@ function GoogleCalendarSettingsPage({ ctx }) {
                 </div>
               </div>
             ))}
-          </div>
-          <div className="alert alert-info" style={{ marginTop: 16 }}>
-            <div className="alert-content" style={{ fontSize: 12 }}>
-              Os IDs das agendas já estão pré-configurados. Se precisar adicionar outras agendas, entre em contato com o suporte.
-            </div>
           </div>
         </div>
       </div>

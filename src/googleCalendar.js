@@ -1,77 +1,31 @@
-// ── Google Calendar API integration ──────────────────────────────────────────
-// Uses @react-oauth/google for OAuth 2.0 + direct REST calls to Calendar API
-
+// ── Google Calendar API integration (API Key — calendários públicos) ──────────
 const CALENDAR_API = "https://www.googleapis.com/calendar/v3";
-const TOKEN_KEY = "gcal_access_token";
 
-export const CALENDAR_SCOPES = "https://www.googleapis.com/auth/calendar.readonly";
+export async function fetchCalendarEvents(calendarId, timeMin, timeMax) {
+  const apiKey = import.meta.env.VITE_GOOGLE_API_KEY;
+  if (!apiKey) throw new Error("VITE_GOOGLE_API_KEY não configurada no .env.local");
 
-// ── Token management (localStorage) ──────────────────────────────────────────
-
-export function saveToken(tokenResponse) {
-  const token = {
-    access_token: tokenResponse.access_token,
-    expires_at: Date.now() + (tokenResponse.expires_in || 3600) * 1000,
-  };
-  localStorage.setItem(TOKEN_KEY, JSON.stringify(token));
-  return token;
-}
-
-export function loadToken() {
-  try {
-    const raw = localStorage.getItem(TOKEN_KEY);
-    if (!raw) return null;
-    const token = JSON.parse(raw);
-    // Consider expired 2 minutes before actual expiry
-    if (Date.now() > token.expires_at - 120_000) return null;
-    return token;
-  } catch {
-    return null;
-  }
-}
-
-export function clearToken() {
-  localStorage.removeItem(TOKEN_KEY);
-}
-
-// ── Calendar API calls ────────────────────────────────────────────────────────
-
-export async function fetchCalendarEvents(accessToken, calendarId, timeMin, timeMax) {
   const params = new URLSearchParams({
+    key: apiKey,
     singleEvents: "true",
     orderBy: "startTime",
     timeMin: timeMin.toISOString(),
     timeMax: timeMax.toISOString(),
     maxResults: "250",
   });
+
   const res = await fetch(
-    `${CALENDAR_API}/calendars/${encodeURIComponent(calendarId)}/events?${params}`,
-    { headers: { Authorization: `Bearer ${accessToken}` } }
+    `${CALENDAR_API}/calendars/${encodeURIComponent(calendarId)}/events?${params}`
   );
-  if (res.status === 401) {
-    clearToken();
-    throw new Error("Token expirado — reconecte o Google Calendar");
-  }
+  if (res.status === 403) throw new Error("Acesso negado — verifique se a agenda é pública e a API Key está correta");
+  if (res.status === 404) throw new Error("Agenda não encontrada — verifique o Calendar ID");
   if (!res.ok) throw new Error(`Google Calendar API: erro ${res.status}`);
   const data = await res.json();
   return data.items || [];
 }
 
-export async function fetchCalendarInfo(accessToken, calendarId) {
-  const res = await fetch(
-    `${CALENDAR_API}/calendars/${encodeURIComponent(calendarId)}`,
-    { headers: { Authorization: `Bearer ${accessToken}` } }
-  );
-  if (!res.ok) return null;
-  return res.json();
-}
-
-// ── Event parsing ─────────────────────────────────────────────────────────────
-
 export function parseGoogleEvent(event, location) {
-  // Skip all-day events (no time)
-  if (!event.start?.dateTime) return null;
-  // Skip cancelled occurrences
+  if (!event.start?.dateTime) return null; // ignora eventos de dia inteiro
   if (event.status === "cancelled") return null;
 
   const startDt = new Date(event.start.dateTime);
