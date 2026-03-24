@@ -942,7 +942,7 @@ function TaskDetailModal({ task, onDelete, onEdit, onClose }) {
 
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
 function DashboardPage({ ctx }) {
-  const { sales, costs, patients, appointments, products, services, setModal } = ctx;
+  const { sales, costs, patients, appointments, products, services, attendances, setModal } = ctx;
   const todayStr = today();
   const curMonth = todayStr.slice(0, 7);
 
@@ -954,9 +954,11 @@ function DashboardPage({ ctx }) {
   const monthSales = sales.filter((s) => s.date.startsWith(curMonth));
   const todayRevenue = todaySales.reduce((s, x) => s + x.price, 0);
   const monthRevenue = monthSales.reduce((s, x) => s + x.price, 0);
-  const monthProfit = monthSales.reduce((s, x) => s + calcNetValue(x), 0);
+  const monthAttendances = (attendances || []).filter((a) => a.date?.startsWith(curMonth));
+  const monthProductCost = monthAttendances.reduce((sum, a) => sum + (a.products || []).reduce((s, p) => s + p.qty * p.costAtUse, 0), 0);
+  const monthFees = monthSales.reduce((s, x) => s + (x.paymentMethod === "credit" ? (x.creditFeeRate / 100) * x.price : 0), 0);
   const monthCosts = costs.filter((c) => c.date.startsWith(curMonth)).reduce((s, c) => s + c.amount, 0);
-  const realProfit = monthProfit - monthCosts;
+  const realProfit = monthRevenue - monthProductCost - monthFees - monthCosts;
   const todayAppt = appointments.filter((a) => a.date === todayStr);
 
   const latePatients = patients.filter((p) => p.status === "late");
@@ -974,7 +976,7 @@ function DashboardPage({ ctx }) {
     }
     return true; // legado: sem data, sempre alerta
   });
-  const lowStock = products.filter((p) => p.totalQty <= p.minStock);
+  const lowStock = products.filter((p) => p.minStock > 0 && p.totalQty <= p.minStock);
   const birthdaySoon = patients.filter((p) => isBirthdaySoon(p.birthdate, 3));
 
   const pendingFillAppts = appointments.filter((a) => a.status === "scheduled" && a.date < todayStr);
@@ -985,7 +987,7 @@ function DashboardPage({ ctx }) {
       <div className="grid-4">
         <MetricCard icon="💰" title="Faturamento Hoje" value={fmt(todayRevenue)} sub={`${todaySales.length} procedimentos`} />
         <MetricCard icon="📈" title="Faturamento Mês" value={fmt(monthRevenue)} sub="mês atual" />
-        <MetricCard icon="✅" title="Lucro Estimado" value={fmt(realProfit)} sub="após custos e taxas" color={realProfit >= 0 ? T.success : T.danger} />
+        <MetricCard icon="✅" title="Lucro Líquido" value={fmt(realProfit)} sub="mês atual" color={realProfit >= 0 ? T.success : T.danger} />
         <MetricCard icon="📅" title="Agenda Hoje" value={todayAppt.length} sub="atendimentos" />
       </div>
       <div className="grid-2">
@@ -3088,7 +3090,7 @@ function ProductForm({ ctx, product, onClose }) {
     unit: product?.unit || "unidade",
     totalQty: product?.totalQty || "",
     avgCost: product?.avgCost || "",
-    minStock: product?.minStock || "",
+    minStock: product?.minStock ?? "",
   });
   async function save() {
     if (!form.name) return;
@@ -3262,10 +3264,88 @@ function StockEntryModal({ product, ctx, editEntry, onClose }) {
 }
 
 // ─── SERVICES ─────────────────────────────────────────────────────────────────
+function DeleteServiceModal({ ctx, service, onClose }) {
+  const { services, setServices, setAppointments, setSales, setQuotations, setAttendances } = ctx;
+  const others = services.filter((s) => s.id !== service.id);
+  const [replacementId, setReplacementId] = useState(others[0]?.id ?? "");
+  const [loading, setLoading] = useState(false);
+
+  async function confirm() {
+    const rep = others.find((s) => String(s.id) === String(replacementId));
+    if (!rep) return;
+    setLoading(true);
+    try {
+      await db.replaceServiceReferences(service.id, rep.id, rep.name);
+      await db.deleteService(service.id);
+      // update in-memory state
+      setAppointments((prev) => prev.map((a) => a.serviceId === service.id ? { ...a, serviceId: rep.id } : a));
+      setSales((prev) => prev.map((s) => {
+        const updated = { ...s };
+        if (updated.serviceId === service.id) updated.serviceId = rep.id;
+        if (Array.isArray(updated.saleServices)) {
+          updated.saleServices = updated.saleServices.map((ss) =>
+            String(ss.serviceId) === String(service.id) ? { ...ss, serviceId: rep.id, serviceName: rep.name } : ss
+          );
+        }
+        return updated;
+      }));
+      setQuotations((prev) => prev.map((q) => ({
+        ...q,
+        items: q.items.map((it) =>
+          String(it.serviceId) === String(service.id) ? { ...it, serviceId: rep.id, serviceName: rep.name } : it
+        ),
+      })));
+      setAttendances((prev) => prev.map((a) => ({
+        ...a,
+        procedures: (a.procedures || []).map((p) =>
+          String(p.serviceId) === String(service.id) ? { ...p, serviceId: rep.id, serviceName: rep.name } : p
+        ),
+      })));
+      setServices((prev) => prev.filter((s) => s.id !== service.id));
+      onClose();
+    } catch (e) {
+      alert("Erro ao excluir: " + e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <>
+      <div className="modal-header">
+        <div className="modal-title">Excluir Procedimento</div>
+        <button className="btn btn-ghost" onClick={onClose}>✕</button>
+      </div>
+      <div className="modal-body">
+        <div className="alert alert-danger" style={{ marginBottom: 16 }}>
+          <div className="alert-content">Você está excluindo <strong>{service.name}</strong>. Todos os orçamentos, vendas e agendamentos com este procedimento serão atualizados para o substituto.</div>
+        </div>
+        <div className="form-group">
+          <label>Procedimento substituto</label>
+          {others.length === 0 ? (
+            <div style={{ color: T.danger, fontSize: 13 }}>Não há outros procedimentos disponíveis. Crie outro antes de excluir este.</div>
+          ) : (
+            <select className="form-control" value={replacementId} onChange={(e) => setReplacementId(e.target.value)}>
+              {others.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          )}
+        </div>
+      </div>
+      <div className="modal-footer">
+        <button className="btn btn-secondary" onClick={onClose}>Cancelar</button>
+        <button className="btn btn-danger" onClick={confirm} disabled={loading || others.length === 0}>
+          {loading ? "Excluindo..." : "Confirmar Exclusão"}
+        </button>
+      </div>
+    </>
+  );
+}
+
 function ServicesPage({ ctx }) {
   const { services, setModal } = ctx;
   function openNew() { setModal({ content: <ServiceForm ctx={ctx} onClose={() => setModal(null)} />, onClose: () => setModal(null) }); }
   function openEdit(svc) { setModal({ content: <ServiceForm ctx={ctx} service={svc} onClose={() => setModal(null)} />, onClose: () => setModal(null) }); }
+  function openDelete(svc) { setModal({ content: <DeleteServiceModal ctx={ctx} service={svc} onClose={() => setModal(null)} />, onClose: () => setModal(null) }); }
 
   return (
     <div>
@@ -3285,7 +3365,10 @@ function ServicesPage({ ctx }) {
                   <td>{fmt(s.price)}</td>
                   <td>{s.needsReturn ? <span className="return-badge">🔄 {s.returnType} em {s.returnDays}d</span> : <span style={{ color: T.grey, fontSize: 12 }}>—</span>}</td>
                   <td><span className={`badge ${s.active ? "badge-ok" : "badge-grey"}`}>{s.active ? "Ativo" : "Inativo"}</span></td>
-                  <td><button className="btn btn-sm btn-secondary" onClick={() => openEdit(s)}>✏️ Editar</button></td>
+                  <td style={{ display: "flex", gap: 6 }}>
+                    <button className="btn btn-sm btn-secondary" onClick={() => openEdit(s)}>✏️ Editar</button>
+                    <button className="btn btn-sm btn-danger" onClick={() => openDelete(s)}>🗑</button>
+                  </td>
                 </tr>
               ))}
             </tbody>

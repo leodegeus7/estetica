@@ -128,6 +128,33 @@ export async function updateService(s) {
   if (error) throw error;
 }
 
+export async function deleteService(id) {
+  const { error } = await supabase.from("services").delete().eq("id", id);
+  if (error) throw error;
+}
+
+export async function replaceServiceReferences(oldId, newId, newName) {
+  // appointments
+  await supabase.from("appointments").update({ service_id: newId }).eq("service_id", oldId);
+  // sales service_id
+  await supabase.from("sales").update({ service_id: newId }).eq("service_id", String(oldId));
+  // quotation_items
+  await supabase.from("quotation_items").update({ service_id: newId, service_name: newName }).eq("service_id", oldId);
+  // attendance_procedures
+  await supabase.from("attendance_procedures").update({ service_id: newId, service_name: newName }).eq("service_id", oldId);
+  // sale_services JSONB
+  const { data: salesData } = await supabase.from("sales").select("id, sale_services").not("sale_services", "is", null);
+  for (const s of (salesData || [])) {
+    if (!Array.isArray(s.sale_services)) continue;
+    const updated = s.sale_services.map((ss) =>
+      String(ss.serviceId) === String(oldId) ? { ...ss, serviceId: newId, serviceName: newName } : ss
+    );
+    if (JSON.stringify(updated) !== JSON.stringify(s.sale_services)) {
+      await supabase.from("sales").update({ sale_services: updated }).eq("id", s.id);
+    }
+  }
+}
+
 // ── patients ──────────────────────────────────────────────────────────────────
 export async function fetchPatients() {
   const { data, error } = await supabase.from("patients").select("*").order("name");
