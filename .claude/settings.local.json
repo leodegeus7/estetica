@@ -46,7 +46,10 @@
       "Bash(cp /tmp/docx_extracted/word/media/image3.png /Users/leodegeus/estetica/public/pdf-assets/logo.png)",
       "Bash(cp /tmp/docx_extracted/word/media/image1.png /Users/leodegeus/estetica/public/pdf-assets/decor.png)",
       "Bash(cp /tmp/docx_extracted/word/media/image2.png /Users/leodegeus/estetica/public/pdf-assets/separator.png)",
-      "Bash(cp /tmp/docx_extracted/word/media/image5.png /Users/leodegeus/estetica/public/pdf-assets/icon-insta.png)"
+      "Bash(cp /tmp/docx_extracted/word/media/image5.png /Users/leodegeus/estetica/public/pdf-assets/icon-insta.png)",
+      "Bash(npm install:*)",
+      "Bash(npm list:*)",
+      "Bash(supabase --version)"
     ]
   }
 }

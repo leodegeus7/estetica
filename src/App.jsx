@@ -4,6 +4,9 @@ import html2canvas from "html2canvas";
 import * as db from "./db";
 import { supabase } from "./supabase";
 import { subscribeToPush } from "./usePushNotifications";
+import { useGoogleLogin } from "@react-oauth/google";
+import { loadToken, saveToken, clearToken, CALENDAR_SCOPES } from "./googleCalendar";
+import { loadMappings, saveMappings, syncGoogleCalendars } from "./googleCalendarSync";
 
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
 const USERS = [
@@ -460,6 +463,10 @@ function MainApp({ user, onLogout }) {
   const [modal, setModal] = useState(null);
   const [pendingReturn, setPendingReturn] = useState(null);
   const [dataLoading, setDataLoading] = useState(true);
+  const [gcalToken, setGcalToken] = useState(() => loadToken());
+  const [gcalMappings, setGcalMappings] = useState(() => loadMappings());
+  const [gcalSyncing, setGcalSyncing] = useState(false);
+  const [gcalLastSync, setGcalLastSync] = useState(null);
 
   useEffect(() => {
     Promise.all([
@@ -497,6 +504,30 @@ function MainApp({ user, onLogout }) {
     });
   }, []);
 
+  async function triggerSync() {
+    if (!gcalToken || gcalSyncing) return;
+    const validMappings = gcalMappings.filter((m) => m.calendarId && m.location);
+    if (validMappings.length === 0) return;
+    setGcalSyncing(true);
+    try {
+      const newDrafts = await syncGoogleCalendars(gcalToken.access_token, validMappings);
+      if (newDrafts.length > 0) setAppointments((prev) => [...prev, ...newDrafts]);
+      setGcalLastSync(new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }));
+    } catch (err) {
+      if (err.message?.includes("Token expirado")) setGcalToken(null);
+      throw err;
+    } finally {
+      setGcalSyncing(false);
+    }
+  }
+
+  useEffect(() => {
+    if (dataLoading || !gcalToken) return;
+    triggerSync();
+    const id = setInterval(() => triggerSync(), 5 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [dataLoading, gcalToken]);
+
   const displayName = user?.user_metadata?.name || user?.email?.split("@")[0] || "Usuario";
   const userForCtx = { ...user, name: displayName };
 
@@ -512,6 +543,10 @@ function MainApp({ user, onLogout }) {
     attendances, setAttendances,
     manualExits, setManualExits,
     tasks, setTasks,
+    gcalToken, setGcalToken,
+    gcalMappings, setGcalMappings,
+    gcalSyncing, gcalLastSync,
+    triggerSync,
     db,
   };
 
@@ -540,12 +575,13 @@ function MainApp({ user, onLogout }) {
     { id: "services", icon: "💉", label: "Procedimentos", group: "cad" },
     { id: "costs", icon: "🧾", label: "Custos", group: "cad" },
     { id: "locations", icon: "📍", label: "Locais", group: "cad" },
+    { id: "gcal", icon: "📅", label: "Google Agenda", group: "cad" },
     { id: "finance", icon: "📊", label: "Financeiro", group: "fin" },
   ];
   const groups = {};
   NAV.forEach((n) => { const g = n.group || "main"; (groups[g] = groups[g] || []).push(n); });
 
-  const PAGES = { dashboard: DashboardPage, appointments: AppointmentsPage, sales: SalesPage, quotations: QuotationsPage, patients: PatientsPage, stock: StockPage, services: ServicesPage, costs: CostsPage, locations: LocationsPage, finance: FinancePage };
+  const PAGES = { dashboard: DashboardPage, appointments: AppointmentsPage, sales: SalesPage, quotations: QuotationsPage, patients: PatientsPage, stock: StockPage, services: ServicesPage, costs: CostsPage, locations: LocationsPage, finance: FinancePage, gcal: GoogleCalendarSettingsPage };
   const PageComponent = PAGES[page] || DashboardPage;
 
   // Bottom nav: 4 pinned + "Mais" drawer
@@ -1142,6 +1178,7 @@ function MetricCard({ icon, title, value, sub, color }) {
 // ─── APPOINTMENTS ─────────────────────────────────────────────────────────────
 function apptStatusInfo(a) {
   const todayStr = today();
+  if (a.status === "draft") return { label: "📅 Google", badgeClass: "badge-warning", color: T.warning };
   if (a.status === "cancelled") return { label: "Cancelado", badgeClass: "badge-cancelled", color: T.grey };
   if (a.status === "done") return { label: "Finalizado", badgeClass: "badge-done", color: T.success };
   if (a.date < todayStr) return { label: "⏳ Aguardando Preenchimento", badgeClass: "badge-warning", color: T.warning };
@@ -1154,17 +1191,26 @@ function AppointmentsPage({ ctx }) {
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const todayStr = today();
 
-  const pendingFill = appointments.filter((a) => a.status === "scheduled" && a.date < todayStr);
+  const drafts = appointments.filter((a) => a.status === "draft");
+  const nonDrafts = appointments.filter((a) => a.status !== "draft");
+  const pendingFill = nonDrafts.filter((a) => a.status === "scheduled" && a.date < todayStr);
 
   const grouped = {
-    today: appointments.filter((a) => a.date === todayStr),
-    upcoming: appointments.filter((a) => a.date > todayStr),
-    past: appointments.filter((a) => a.date < todayStr),
+    today: nonDrafts.filter((a) => a.date === todayStr),
+    upcoming: nonDrafts.filter((a) => a.date > todayStr),
+    past: nonDrafts.filter((a) => a.date < todayStr),
     fill: pendingFill,
+    drafts,
   };
 
   function openNew() {
     setModal({ content: <AppointmentForm ctx={ctx} onClose={() => setModal(null)} />, onClose: () => setModal(null) });
+  }
+  function openComplete(draft) {
+    setModal({
+      content: <AppointmentForm ctx={ctx} draftId={draft.id} prefill={{ date: draft.date, time: draft.time, duration: draft.duration, location: draft.location, draftTitle: draft.draftTitle }} onClose={() => setModal(null)} />,
+      onClose: () => setModal(null),
+    });
   }
   function openSale(appt) {
     setModal({ lg: true, content: <SaleForm ctx={ctx} appointmentId={appt.id} prefillPatient={appt.patientId} prefillService={appt.serviceId} prefillLocation={appt.location} onClose={() => setModal(null)} />, onClose: () => setModal(null) });
@@ -1207,6 +1253,9 @@ function AppointmentsPage({ ctx }) {
           <button className={`tab ${tab === "fill" ? "active" : ""}`} onClick={() => setTab("fill")} style={{ color: pendingFill.length > 0 ? T.warning : undefined }}>
             ⏳ A Preencher {pendingFill.length > 0 && `(${pendingFill.length})`}
           </button>
+          <button className={`tab ${tab === "drafts" ? "active" : ""}`} onClick={() => setTab("drafts")} style={{ color: drafts.length > 0 ? T.teal : undefined }}>
+            📅 Google {drafts.length > 0 && `(${drafts.length})`}
+          </button>
         </div>
         <button className="btn btn-primary" onClick={openNew}>+ Agendar</button>
       </div>
@@ -1220,18 +1269,24 @@ function AppointmentsPage({ ctx }) {
                 const p = patients.find((x) => String(x.id) === String(a.patientId));
                 const s = services.find((x) => String(x.id) === String(a.serviceId));
                 const statusInfo = apptStatusInfo(a);
-                const isPastScheduled = a.status === "scheduled" && a.date < todayStr;
+                const isDraft = a.status === "draft";
                 return (
-                  <tr key={a.id}>
+                  <tr key={a.id} style={isDraft ? { background: "#fffbf0" } : undefined}>
                     <td>{fmtDate(a.date)}</td>
                     <td><strong>{a.time}</strong></td>
-                    <td>{p?.name}</td>
-                    <td><span className={`badge ${a.appointmentType === "avaliacao" ? "badge-warning" : "badge-scheduled"}`}>{a.appointmentType === "avaliacao" ? "Avaliação" : "Consulta"}</span></td>
-                    <td>{s?.name} {s?.needsReturn && <span className="return-badge">🔄 {s.returnType}</span>}</td>
+                    <td>{isDraft ? <span style={{ color: T.teal, fontStyle: "italic" }}>{a.draftTitle}</span> : p?.name}</td>
+                    <td>{isDraft ? <span style={{ color: T.grey, fontSize: 12 }}>{a.location}</span> : <span className={`badge ${a.appointmentType === "avaliacao" ? "badge-warning" : "badge-scheduled"}`}>{a.appointmentType === "avaliacao" ? "Avaliação" : "Consulta"}</span>}</td>
+                    <td>{isDraft ? <span style={{ color: T.grey, fontSize: 12 }}>—</span> : <>{s?.name} {s?.needsReturn && <span className="return-badge">🔄 {s.returnType}</span>}</>}</td>
                     <td style={{ color: T.grey, fontSize: 12 }}>{a.duration || 60}min</td>
                     <td><span className={`badge ${statusInfo.badgeClass}`}>{statusInfo.label}</span></td>
                     <td>
                       <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
+                        {isDraft && (
+                          <>
+                            <button className="btn btn-sm btn-primary" onClick={() => openComplete(a)}>✏️ Completar</button>
+                            <button className="btn btn-sm btn-danger" onClick={() => deleteAppt(a.id)}>🗑</button>
+                          </>
+                        )}
                         {a.status === "scheduled" && (
                           <>
                             <button className="btn btn-sm btn-primary" onClick={() => openAttendance(a)}>⚡ Preencher</button>
@@ -1268,18 +1323,18 @@ function AppointmentsPage({ ctx }) {
 }
 
 // ─── APPOINTMENT FORM ─────────────────────────────────────────────────────────
-function AppointmentForm({ ctx, onClose, prefill = {} }) {
+function AppointmentForm({ ctx, onClose, prefill = {}, draftId }) {
   const { services, setAppointments, locations, patients: ctxPatients, setPatients } = ctx;
   const defaultLocation = (locations || []).find((l) => l.name === "Clínica")?.name || (locations?.[0]?.name || "Clínica");
   const [form, setForm] = useState({
     patientId: prefill.patientId || "",
     serviceId: prefill.serviceId || "",
     date: prefill.date || today(),
-    time: "09:00",
+    time: prefill.time || "09:00",
     location: prefill.location || defaultLocation,
     note: prefill.note || "",
     appointmentType: "consulta",
-    duration: 60,
+    duration: prefill.duration || 60,
   });
   const [showNew, setShowNew] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -1312,16 +1367,29 @@ function AppointmentForm({ ctx, onClose, prefill = {} }) {
     if (form.appointmentType !== "avaliacao" && !form.serviceId) return;
     setSaving(true);
     try {
-      const created = await db.createAppointment({
-        patientId: form.patientId,
-        serviceId: form.serviceId,
-        date: form.date,
-        time: form.time,
-        location: form.location,
-        duration: form.duration,
-        appointmentType: form.appointmentType,
-      });
-      setAppointments((prev) => [...prev, created]);
+      if (draftId) {
+        await db.completeDraftAppointment(draftId, {
+          patientId: form.patientId,
+          serviceId: form.serviceId,
+          appointmentType: form.appointmentType,
+          duration: form.duration,
+        });
+        setAppointments((prev) => prev.map((a) => a.id === draftId
+          ? { ...a, patientId: form.patientId, serviceId: form.serviceId, status: "scheduled", appointmentType: form.appointmentType, duration: form.duration }
+          : a
+        ));
+      } else {
+        const created = await db.createAppointment({
+          patientId: form.patientId,
+          serviceId: form.serviceId,
+          date: form.date,
+          time: form.time,
+          location: form.location,
+          duration: form.duration,
+          appointmentType: form.appointmentType,
+        });
+        setAppointments((prev) => [...prev, created]);
+      }
       onClose();
     } catch (e) {
       console.error("Erro ao agendar:", e);
@@ -1336,7 +1404,7 @@ function AppointmentForm({ ctx, onClose, prefill = {} }) {
   return (
     <>
       <div className="modal-header">
-        <div className="modal-title">{prefill.serviceId ? "Agendar Retorno/Retoque" : "Novo Agendamento"}</div>
+        <div className="modal-title">{draftId ? `Completar: ${prefill.draftTitle || "Importado do Google"}` : prefill.serviceId ? "Agendar Retorno/Retoque" : "Novo Agendamento"}</div>
         <button className="btn btn-ghost" onClick={onClose}>✕</button>
       </div>
       <div className="modal-body">
@@ -4445,6 +4513,118 @@ function ApproveQuotationModal({ quot, ctx, onClose }) {
 }
 
 // ─── LOCATIONS ─────────────────────────────────────────────────────────────────
+// ─── GOOGLE CALENDAR SETTINGS ─────────────────────────────────────────────────
+function GoogleCalendarSettingsPage({ ctx }) {
+  const { gcalToken, setGcalToken, gcalMappings, setGcalMappings, gcalSyncing, gcalLastSync, triggerSync, locations } = ctx;
+  const [mappings, setMappings] = useState(gcalMappings);
+  const [syncError, setSyncError] = useState("");
+
+  const login = useGoogleLogin({
+    scope: CALENDAR_SCOPES,
+    onSuccess: (tokenResponse) => {
+      const saved = saveToken(tokenResponse);
+      setGcalToken(saved);
+    },
+    onError: (err) => alert("Erro ao conectar Google: " + (err.error_description || err.error)),
+  });
+
+  function disconnect() {
+    clearToken();
+    setGcalToken(null);
+  }
+
+  function updateMapping(i, field, value) {
+    const updated = mappings.map((m, idx) => idx === i ? { ...m, [field]: value } : m);
+    setMappings(updated);
+    setGcalMappings(updated);
+    saveMappings(updated);
+  }
+
+  async function doSync() {
+    setSyncError("");
+    try {
+      await triggerSync();
+    } catch (e) {
+      setSyncError(e.message || "Erro ao sincronizar");
+    }
+  }
+
+  return (
+    <div>
+      <div className="section-header">
+        <div className="section-sub">Importe eventos do Google Calendar como pre-agendamentos</div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div style={{ padding: "20px 24px" }}>
+          <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 12 }}>Conexão com o Google</div>
+          {gcalToken ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+              <span className="badge badge-ok">✓ Conectado</span>
+              <span style={{ fontSize: 13, color: T.grey }}>Token válido</span>
+              <button className="btn btn-secondary btn-sm" onClick={doSync} disabled={gcalSyncing}>
+                {gcalSyncing ? "Sincronizando..." : "🔄 Sincronizar agora"}
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={disconnect}>Desconectar</button>
+              {gcalLastSync && <span style={{ fontSize: 12, color: T.grey }}>Última sincronização: {gcalLastSync}</span>}
+              {syncError && <span style={{ fontSize: 12, color: T.danger }}>{syncError}</span>}
+            </div>
+          ) : (
+            <div>
+              <p style={{ fontSize: 13, color: T.grey, marginBottom: 12 }}>Clique em "Conectar" para autorizar o acesso de leitura ao Google Calendar.</p>
+              <button className="btn btn-primary" onClick={() => login()}>
+                🔗 Conectar Google Calendar
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="card">
+        <div style={{ padding: "20px 24px" }}>
+          <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 4 }}>Agendas e Locais</div>
+          <p style={{ fontSize: 13, color: T.grey, marginBottom: 16 }}>Configure qual Local do sistema cada agenda do Google representa.</p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {mappings.map((m, i) => (
+              <div key={i} style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap" }}>
+                <div className="form-group" style={{ flex: 2, marginBottom: 0 }}>
+                  <label>Nome da Agenda</label>
+                  <input className="form-control" value={m.label} onChange={(e) => updateMapping(i, "label", e.target.value)} placeholder="Ex: Agenda Clínica" />
+                </div>
+                <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
+                  <label>Local no Sistema</label>
+                  <select className="form-control" value={m.location} onChange={(e) => updateMapping(i, "location", e.target.value)}>
+                    <option value="">— Selecione —</option>
+                    {(locations || []).map((l) => <option key={l.id} value={l.name}>{l.name}</option>)}
+                  </select>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="alert alert-info" style={{ marginTop: 16 }}>
+            <div className="alert-content" style={{ fontSize: 12 }}>
+              Os IDs das agendas já estão pré-configurados. Se precisar adicionar outras agendas, entre em contato com o suporte.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginTop: 16 }}>
+        <div style={{ padding: "20px 24px" }}>
+          <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 8 }}>Como funciona</div>
+          <ul style={{ fontSize: 13, color: T.grey, paddingLeft: 20, lineHeight: 2 }}>
+            <li>Eventos adicionados no Google Calendar são importados automaticamente como <strong>pre-agendamentos</strong></li>
+            <li>Sincronização automática a cada 5 minutos enquanto o app estiver aberto</li>
+            <li>Cada pre-agendamento aparece na aba <strong>📅 Google</strong> da Agenda</li>
+            <li>Clique em <strong>Completar</strong> para adicionar paciente e procedimento</li>
+            <li>Eventos de dia inteiro são ignorados (apenas eventos com horário são importados)</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function LocationsPage({ ctx }) {
   const { locations, setLocations } = ctx;
   const [newName, setNewName] = useState("");

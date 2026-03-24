@@ -208,7 +208,57 @@ export async function fetchAppointments() {
     location: a.location || "Clínica",
     duration: a.duration || 60,
     appointmentType: a.appointment_type || "consulta",
+    source: a.source || null,
+    googleEventId: a.google_event_id || null,
+    draftTitle: a.draft_title || "",
   }));
+}
+
+export async function fetchGoogleEventIds() {
+  const { data, error } = await supabase
+    .from("appointments")
+    .select("google_event_id")
+    .not("google_event_id", "is", null);
+  if (error) throw error;
+  return new Set(data.map((r) => r.google_event_id));
+}
+
+export async function createDraftAppointment(draft) {
+  const { data, error } = await supabase.from("appointments").insert({
+    patient_id: null,
+    service_id: null,
+    date: draft.date,
+    time: draft.time,
+    status: "draft",
+    sale_id: null,
+    location: draft.location || "Clínica",
+    duration: draft.duration || 60,
+    appointment_type: "consulta",
+    source: "google",
+    google_event_id: draft.googleEventId,
+    draft_title: draft.draftTitle || "",
+  }).select().single();
+  if (error) throw error;
+  return {
+    id: data.id, patientId: null, serviceId: null,
+    date: data.date, time: data.time, status: "draft", saleId: null,
+    location: data.location, duration: data.duration,
+    appointmentType: data.appointment_type,
+    source: "google",
+    googleEventId: data.google_event_id,
+    draftTitle: data.draft_title,
+  };
+}
+
+export async function completeDraftAppointment(id, { patientId, serviceId, appointmentType, duration }) {
+  const { error } = await supabase.from("appointments").update({
+    patient_id: patientId,
+    service_id: serviceId || null,
+    status: "scheduled",
+    appointment_type: appointmentType || "consulta",
+    duration: duration || 60,
+  }).eq("id", id);
+  if (error) throw error;
 }
 
 export async function createAppointment(a) {
