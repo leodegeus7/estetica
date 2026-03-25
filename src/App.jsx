@@ -3490,12 +3490,21 @@ function ServiceForm({ ctx, service, onClose }) {
     returnType: service?.returnType || "retoque", returnDays: service?.returnDays || 30, returnNote: service?.returnNote || "",
   });
 
-  function save() {
+  async function save() {
     if (!form.name) return;
     const data = { ...form, price: +form.price, duration: +form.duration, returnDays: +form.returnDays };
-    if (editing) setServices((prev) => prev.map((s) => s.id === service.id ? { ...s, ...data } : s));
-    else setServices((prev) => [...prev, { id: Date.now(), ...data }]);
-    onClose();
+    try {
+      if (editing) {
+        await db.updateService({ ...service, ...data });
+        setServices((prev) => prev.map((s) => s.id === service.id ? { ...s, ...data } : s));
+      } else {
+        const created = await db.createService(data);
+        setServices((prev) => [...prev, created]);
+      }
+      onClose();
+    } catch (e) {
+      alert("Erro ao salvar procedimento: " + (e.message || "tente novamente"));
+    }
   }
 
   return (
