@@ -3995,7 +3995,7 @@ function buildQuotationTemplate(quot, patient) {
       ` : "";
 
       return `
-        <div style="margin-bottom:20px;">
+        <div data-option-block style="margin-bottom:20px;">
           <div style="font-size:13px;font-weight:700;color:${C1};letter-spacing:0.5px;padding-bottom:6px;margin-bottom:2px;border-bottom:2px solid ${C1};">
             ${opt.label}
           </div>
@@ -4024,16 +4024,9 @@ function buildQuotationTemplate(quot, patient) {
 
   return `
     <div style="
-      width:794px;height:1122px;background:#fff;position:relative;overflow:hidden;
+      width:794px;background:transparent;position:relative;
       font-family:'Josefin Sans',sans-serif;box-sizing:border-box;
     ">
-      <!-- Background watermark -->
-      <img src="/pdf-assets/decor.png" crossorigin="anonymous" style="
-        position:absolute;top:50%;left:50%;
-        transform:translate(-50%,-50%);
-        width:700px;height:700px;object-fit:contain;
-        pointer-events:none;z-index:0;
-      " />
 
       <!-- HEADER -->
       <div style="position:relative;z-index:1;padding:32px 56px 0 56px;">
@@ -4053,7 +4046,7 @@ function buildQuotationTemplate(quot, patient) {
       </div>
 
       <!-- BODY -->
-      <div style="position:relative;z-index:1;padding:40px 56px 0 56px;">
+      <div style="position:relative;z-index:1;padding:40px 56px 40px 56px;">
         <div style="font-size:17px;font-weight:700;color:${DARK};margin-bottom:8px;line-height:1.3;">
           Proposta de Tratamento
         </div>
@@ -4067,51 +4060,142 @@ function buildQuotationTemplate(quot, patient) {
           Curitiba, ${fmtDateLong(quot.date)}
         </div>
       </div>
+    </div>
+  `;
+}
 
-      <!-- FOOTER -->
-      <div style="position:absolute;bottom:0;left:0;right:0;z-index:1;">
-        <div style="text-align:center;font-size:11px;color:${C2};margin-bottom:16px;line-height:1.7;">
-          Qualquer dúvida, entre em contato com:<br/>
-          <strong style="font-size:13px;">+55 41 98836-6745</strong>
-        </div>
-        <div style="text-align:center;padding:0 56px 0 56px;margin-bottom:16px;">
-          <div style="border-top:1px solid #b0c4c9;width:380px;margin:0 auto 14px auto;"></div>
-          <div style="font-size:15px;font-weight:700;color:${C1};letter-spacing:1px;">DR. MURILO DO VALLE</div>
-          <div style="font-size:13px;color:${C2};margin-top:4px;font-weight:600;">CRO 30342</div>
-        </div>
-        <img src="/pdf-assets/separator.png" crossorigin="anonymous" style="width:100%;height:3px;display:block;" />
-        <div style="display:flex;align-items:center;justify-content:center;gap:8px;padding:14px 0;">
-          <img src="/pdf-assets/icon-ig.png" crossorigin="anonymous" style="width:22px;height:22px;object-fit:contain;" />
-          <span style="font-size:12px;color:${C2};font-weight:600;">drmurilodovalle</span>
-        </div>
+function buildQuotationFooter() {
+  const C1 = "#1B4B56";
+  const C2 = "#368E99";
+  return `
+    <div style="width:794px;background:#fff;font-family:'Josefin Sans',sans-serif;box-sizing:border-box;">
+      <div style="text-align:center;font-size:11px;color:${C2};margin-bottom:16px;line-height:1.7;padding-top:16px;">
+        Qualquer dúvida, entre em contato com:<br/>
+        <strong style="font-size:13px;">+55 41 98836-6745</strong>
+      </div>
+      <div style="text-align:center;padding:0 56px 0 56px;margin-bottom:16px;">
+        <div style="border-top:1px solid #b0c4c9;width:380px;margin:0 auto 14px auto;"></div>
+        <div style="font-size:15px;font-weight:700;color:${C1};letter-spacing:1px;">DR. MURILO DO VALLE</div>
+        <div style="font-size:13px;color:${C2};margin-top:4px;font-weight:600;">CRO 30342</div>
+      </div>
+      <img src="/pdf-assets/separator.png" crossorigin="anonymous" style="width:100%;height:3px;display:block;" />
+      <div style="display:flex;align-items:center;justify-content:center;gap:8px;padding:14px 0;">
+        <img src="/pdf-assets/icon-ig.png" crossorigin="anonymous" style="width:22px;height:22px;object-fit:contain;" />
+        <span style="font-size:12px;color:${C2};font-weight:600;">drmurilodovalle</span>
       </div>
     </div>
   `;
 }
 
 async function generateQuotationPDF(quot, patient) {
-  const wrapper = document.createElement("div");
-  wrapper.style.cssText = "position:fixed;top:-99999px;left:-99999px;z-index:-1;width:794px;";
-  wrapper.innerHTML = buildQuotationTemplate(quot, patient);
-  document.body.appendChild(wrapper);
+  const scale = 2;
+  const A4_W = 794;
+  const A4_H = 1122;
+  const TOP_PAD_PX = 120 * scale; // ~2 dedos de margem no topo das páginas 2+
+  const FOOTER_BUFFER_PX = 48 * scale; // espaço extra acima do rodapé para não colar
+
+  // Render content (header + body, no footer)
+  const contentEl = document.createElement("div");
+  contentEl.style.cssText = "position:fixed;top:-99999px;left:-99999px;z-index:-1;width:794px;";
+  contentEl.innerHTML = buildQuotationTemplate(quot, patient);
+  document.body.appendChild(contentEl);
+
+  // Render footer separately
+  const footerEl = document.createElement("div");
+  footerEl.style.cssText = "position:fixed;top:-99999px;left:-99999px;z-index:-1;width:794px;";
+  footerEl.innerHTML = buildQuotationFooter();
+  document.body.appendChild(footerEl);
 
   try {
     await document.fonts.ready;
-    const canvas = await html2canvas(wrapper.firstElementChild, {
-      scale: 2,
-      useCORS: true,
-      backgroundColor: "#ffffff",
-      width: 794,
-      height: 1122,
+
+    // Collect option-block start positions (canvas coords) to avoid orphaned headers
+    const contentContainer = contentEl.firstElementChild;
+    const containerTop = contentContainer.getBoundingClientRect().top;
+    const optionBlockEls = Array.from(contentContainer.querySelectorAll("[data-option-block]"));
+    const blockStartsPx = optionBlockEls.map((el) => (el.getBoundingClientRect().top - containerTop) * scale);
+
+    // Load watermark image to draw on every page
+    const watermarkImg = await new Promise((resolve) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => resolve(img);
+      img.onerror = () => resolve(null);
+      img.src = "/pdf-assets/decor.png";
     });
+
+    const [contentCanvas, footerCanvas] = await Promise.all([
+      html2canvas(contentEl.firstElementChild, { scale, useCORS: true, backgroundColor: null, width: A4_W }),
+      html2canvas(footerEl.firstElementChild, { scale, useCORS: true, backgroundColor: null, width: A4_W }),
+    ]);
+
     const pdf = new jsPDF({ unit: "mm", format: "a4", orientation: "portrait" });
     const pdfW = pdf.internal.pageSize.getWidth();
     const pdfH = pdf.internal.pageSize.getHeight();
-    pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, pdfW, pdfH);
+
+    const A4_H_PX = A4_H * scale;
+    const footerH = footerCanvas.height;
+    const usableH = A4_H_PX - footerH - FOOTER_BUFFER_PX; // content area per page (buffer before footer)
+
+    // Build page slices accounting for top padding on pages 2+
+    // Also avoid cutting just after an option-block header (orphan prevention)
+    const ORPHAN_ZONE_PX = 90 * scale; // if header falls in last 90px of page, push to next
+    const pages = [];
+    let srcY = 0;
+    while (srcY < contentCanvas.height) {
+      const topPad = pages.length > 0 ? TOP_PAD_PX : 0;
+      const availH = usableH - topPad;
+      let sliceEnd = srcY + availH;
+
+      if (sliceEnd < contentCanvas.height) {
+        // Check if any option-block header would be orphaned near the bottom of this slice
+        for (const bStart of blockStartsPx) {
+          if (bStart > srcY && bStart < sliceEnd && (sliceEnd - bStart) < ORPHAN_ZONE_PX) {
+            sliceEnd = bStart; // cut just before the header so it moves to next page
+            break;
+          }
+        }
+      }
+
+      const srcH = Math.min(sliceEnd - srcY, contentCanvas.height - srcY);
+      if (srcH <= 0) break; // safety guard
+      pages.push({ srcY, srcH, topPad });
+      srcY += srcH;
+    }
+
+    for (let i = 0; i < pages.length; i++) {
+      if (i > 0) pdf.addPage();
+      const { srcY: pSrcY, srcH: pSrcH, topPad } = pages[i];
+
+      const pageCanvas = document.createElement("canvas");
+      pageCanvas.width = A4_W * scale;
+      pageCanvas.height = A4_H_PX;
+      const ctx = pageCanvas.getContext("2d");
+
+      // White background
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
+
+      // Watermark centered on this page
+      if (watermarkImg) {
+        const wSize = 700 * scale;
+        ctx.drawImage(watermarkImg, (pageCanvas.width - wSize) / 2, (A4_H_PX - wSize) / 2, wSize, wSize);
+      }
+
+      // Content slice drawn with top padding
+      ctx.drawImage(contentCanvas, 0, pSrcY, pageCanvas.width, pSrcH, 0, topPad, pageCanvas.width, pSrcH);
+
+      // Footer fixed at bottom of every page
+      ctx.drawImage(footerCanvas, 0, 0, pageCanvas.width, footerH, 0, A4_H_PX - footerH, pageCanvas.width, footerH);
+
+      pdf.addImage(pageCanvas.toDataURL("image/png"), "PNG", 0, 0, pdfW, pdfH);
+    }
+
     const patSlug = (patient?.name || "proposta").replace(/\s+/g, "-").toLowerCase();
     pdf.save(`proposta-${patSlug}.pdf`);
   } finally {
-    document.body.removeChild(wrapper);
+    document.body.removeChild(contentEl);
+    document.body.removeChild(footerEl);
   }
 }
 
