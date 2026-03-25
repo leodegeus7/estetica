@@ -565,8 +565,8 @@ function MainApp({ user, onLogout }) {
   const NAV = [
     { id: "dashboard", icon: "🏠", label: "Dashboard" },
     { id: "appointments", icon: "📅", label: "Agenda", group: "op" },
-    { id: "sales", icon: "💳", label: "Vendas", group: "op" },
     { id: "quotations", icon: "📋", label: "Orçamentos", group: "op" },
+    { id: "sales", icon: "💳", label: "Vendas", group: "op" },
     { id: "patients", icon: "👤", label: "Pacientes", group: "op" },
     { id: "stock", icon: "📦", label: "Estoque", group: "cad" },
     { id: "services", icon: "💉", label: "Procedimentos", group: "cad" },
@@ -3932,30 +3932,84 @@ function fmtDateLong(d) {
 }
 
 function buildQuotationTemplate(quot, patient) {
-  const items = quot.items || [];
   const C1 = "#1B4B56";
   const C2 = "#368E99";
   const DARK = "#112933";
 
-  const itemsHtml = items.map((item) => `
-    <div style="padding:14px 0;border-bottom:1px solid #e5eef0;">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;">
-        <div style="font-size:14px;font-weight:400;color:${DARK};line-height:1.5;flex:1;padding-right:20px;">${item.serviceName}</div>
-        <div style="font-size:14px;font-weight:600;color:${DARK};white-space:nowrap;">${fmt(item.price)}</div>
+  const options = quot.options || [];
+  const multipleOptions = options.length > 1;
+
+  // Helper: render a single item row
+  function itemRow(item) {
+    return `
+      <div style="padding:14px 0;border-bottom:1px solid #e5eef0;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+          <div style="font-size:14px;font-weight:400;color:${DARK};line-height:1.5;flex:1;padding-right:20px;">${item.serviceName}</div>
+          <div style="font-size:14px;font-weight:600;color:${DARK};white-space:nowrap;">${fmt(item.price)}</div>
+        </div>
+        ${item.note ? `<div style="font-size:12px;color:#888;margin-top:4px;">${item.note}</div>` : ""}
       </div>
-      ${item.note ? `<div style="font-size:12px;color:#888;margin-top:4px;">${item.note}</div>` : ""}
-    </div>
-  `).join("");
+    `;
+  }
 
-  const discountHtml = quot.discount > 0 ? `
-    <div style="display:flex;justify-content:space-between;font-size:13px;color:#777;margin-bottom:6px;">
-      <span>Subtotal</span><span>${fmt(quot.total)}</span>
-    </div>
-    <div style="display:flex;justify-content:space-between;font-size:13px;color:#2e9e6b;margin-bottom:10px;">
-      <span>Desconto</span><span>-${fmt(quot.discount)}</span>
-    </div>
-  ` : "";
+  let bodyContent;
 
+  if (!multipleOptions) {
+    // ── Single option: render exactly as before ──
+    const opt = options[0] || { items: [], discount: 0 };
+    const itemsHtml = opt.items.map(itemRow).join("");
+    const optSubtotal = opt.items.reduce((s, it) => s + (+it.price || 0), 0);
+    const optTotal = opt.items.reduce((s, it) => s + (+it.finalPrice || 0), 0);
+    const discountHtml = opt.discount > 0 ? `
+      <div style="display:flex;justify-content:space-between;font-size:13px;color:#777;margin-bottom:6px;">
+        <span>Subtotal</span><span>${fmt(optSubtotal)}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:13px;color:#2e9e6b;margin-bottom:10px;">
+        <span>Desconto</span><span>-${fmt(opt.discount)}</span>
+      </div>
+    ` : "";
+
+    bodyContent = `
+      <div style="margin-bottom:20px;">${itemsHtml}</div>
+      <div style="padding-top:8px;">
+        ${discountHtml}
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-size:15px;font-weight:700;color:${C1};">Seu Investimento</span>
+          <span style="font-size:18px;font-weight:700;color:${C1};">${fmt(optTotal)}</span>
+        </div>
+      </div>
+    `;
+  } else {
+    // ── Multiple options: render each as a labeled block, no grand total ──
+    const optionsHtml = options.map((opt) => {
+      const optSubtotal = opt.items.reduce((s, it) => s + (+it.price || 0), 0);
+      const optTotal = opt.items.reduce((s, it) => s + (+it.finalPrice || 0), 0);
+      const itemsHtml = opt.items.map(itemRow).join("");
+      const discountHtml = opt.discount > 0 ? `
+        <div style="display:flex;justify-content:space-between;font-size:12px;color:#777;margin-top:6px;margin-bottom:2px;">
+          <span>Subtotal</span><span>${fmt(optSubtotal)}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:12px;color:#2e9e6b;margin-bottom:4px;">
+          <span>Desconto</span><span>-${fmt(opt.discount)}</span>
+        </div>
+      ` : "";
+
+      return `
+        <div style="margin-bottom:20px;">
+          <div style="font-size:13px;font-weight:700;color:${C1};letter-spacing:0.5px;padding-bottom:6px;margin-bottom:2px;border-bottom:2px solid ${C1};">
+            ${opt.label}
+          </div>
+          ${itemsHtml}
+          <div style="padding-top:6px;text-align:right;">
+            ${discountHtml}
+            <span style="font-size:14px;font-weight:700;color:${C1};">Total: ${fmt(optTotal)}</span>
+          </div>
+        </div>
+      `;
+    }).join("");
+
+    bodyContent = `<div style="margin-bottom:8px;">${optionsHtml}</div>`;
+  }
 
   const expiryDate = (() => {
     const base = quot.validUntil || quot.date;
@@ -3973,27 +4027,19 @@ function buildQuotationTemplate(quot, patient) {
       width:794px;height:1122px;background:#fff;position:relative;overflow:hidden;
       font-family:'Josefin Sans',sans-serif;box-sizing:border-box;
     ">
-      <!-- Background watermark: MV circle centered on page -->
+      <!-- Background watermark -->
       <img src="/pdf-assets/decor.png" crossorigin="anonymous" style="
-        position:absolute;
-        top:50%;left:50%;
+        position:absolute;top:50%;left:50%;
         transform:translate(-50%,-50%);
-        width:700px;height:700px;
-        object-fit:contain;
-        pointer-events:none;
-        z-index:0;
+        width:700px;height:700px;object-fit:contain;
+        pointer-events:none;z-index:0;
       " />
 
       <!-- HEADER -->
       <div style="position:relative;z-index:1;padding:32px 56px 0 56px;">
-
-        <!-- Logo centered -->
         <div style="text-align:center;margin-bottom:18px;">
-          <img src="/pdf-assets/logo.png" crossorigin="anonymous"
-            style="width:320px;height:auto;display:inline-block;" />
+          <img src="/pdf-assets/logo.png" crossorigin="anonymous" style="width:320px;height:auto;display:inline-block;" />
         </div>
-
-        <!-- Contact: right-aligned -->
         <div style="text-align:right;line-height:1.7;">
           <div style="font-size:12px;color:${C2};font-weight:600;">+55 41 98836-6745</div>
           <div style="font-size:11px;color:${DARK};">Av. República Argentina, 2056,</div>
@@ -4003,40 +4049,20 @@ function buildQuotationTemplate(quot, patient) {
 
       <!-- Separator -->
       <div style="position:relative;z-index:1;margin:18px 0 0 0;">
-        <img src="/pdf-assets/separator.png" crossorigin="anonymous"
-          style="width:100%;height:3px;display:block;" />
+        <img src="/pdf-assets/separator.png" crossorigin="anonymous" style="width:100%;height:3px;display:block;" />
       </div>
 
       <!-- BODY -->
       <div style="position:relative;z-index:1;padding:40px 56px 0 56px;">
-
-        <!-- Title: "Proposta de Tratamento" -->
         <div style="font-size:17px;font-weight:700;color:${DARK};margin-bottom:8px;line-height:1.3;">
           Proposta de Tratamento
         </div>
-
-        <!-- Validity badge -->
         ${validUntilBadge}
-
-        <!-- Greeting -->
         <div style="font-size:13px;color:${DARK};margin-bottom:24px;line-height:1.7;">
           Prezado(a) <strong>${patient?.name || ""}</strong>,<br/>
           Segue abaixo a proposta de tratamento elaborada especialmente para você.
         </div>
-
-        <!-- Items -->
-        <div style="margin-bottom:20px;">${itemsHtml}</div>
-
-        <!-- Total -->
-        <div style="padding-top:8px;">
-          ${discountHtml}
-          <div style="display:flex;justify-content:space-between;align-items:center;">
-            <span style="font-size:15px;font-weight:700;color:${C1};">Seu Investimento</span>
-            <span style="font-size:18px;font-weight:700;color:${C1};">${fmt(quot.totalWithDiscount)}</span>
-          </div>
-        </div>
-
-        <!-- Date -->
+        ${bodyContent}
         <div style="margin-top:28px;font-size:13px;color:${DARK};">
           Curitiba, ${fmtDateLong(quot.date)}
         </div>
@@ -4044,29 +4070,17 @@ function buildQuotationTemplate(quot, patient) {
 
       <!-- FOOTER -->
       <div style="position:absolute;bottom:0;left:0;right:0;z-index:1;">
-
-        <!-- CTA -->
         <div style="text-align:center;font-size:11px;color:${C2};margin-bottom:16px;line-height:1.7;">
           Qualquer dúvida, entre em contato com:<br/>
           <strong style="font-size:13px;">+55 41 98836-6745</strong>
         </div>
-
-        <!-- Signature line + name + CRO -->
         <div style="text-align:center;padding:0 56px 0 56px;margin-bottom:16px;">
           <div style="border-top:1px solid #b0c4c9;width:380px;margin:0 auto 14px auto;"></div>
           <div style="font-size:15px;font-weight:700;color:${C1};letter-spacing:1px;">DR. MURILO DO VALLE</div>
           <div style="font-size:13px;color:${C2};margin-top:4px;font-weight:600;">CRO 30342</div>
         </div>
-
-        <!-- Bottom separator -->
-        <img src="/pdf-assets/separator.png" crossorigin="anonymous"
-          style="width:100%;height:3px;display:block;" />
-
-        <!-- Social row: Instagram only -->
-        <div style="
-          display:flex;align-items:center;justify-content:center;
-          gap:8px;padding:14px 0;
-        ">
+        <img src="/pdf-assets/separator.png" crossorigin="anonymous" style="width:100%;height:3px;display:block;" />
+        <div style="display:flex;align-items:center;justify-content:center;gap:8px;padding:14px 0;">
           <img src="/pdf-assets/icon-ig.png" crossorigin="anonymous" style="width:22px;height:22px;object-fit:contain;" />
           <span style="font-size:12px;color:${C2};font-weight:600;">drmurilodovalle</span>
         </div>
@@ -4158,8 +4172,18 @@ function QuotationsPage({ ctx }) {
                   <tr key={q.id}>
                     <td style={{ whiteSpace: "nowrap" }}>{fmtDate(q.date)}</td>
                     <td>{p?.name || "—"}</td>
-                    <td style={{ fontSize: 12 }}>{q.items?.length || 0} procedimento(s)</td>
-                    <td><strong>{fmt(q.totalWithDiscount)}</strong>{q.discount > 0 && <div style={{ fontSize: 11, color: T.success }}>-{fmt(q.discount)} desc.</div>}</td>
+                    <td style={{ fontSize: 12 }}>
+                      {(q.options?.length || 0) > 1
+                        ? `${q.options.length} opções`
+                        : `${q.options?.[0]?.items?.length || 0} procedimento(s)`}
+                    </td>
+                    <td>
+                      {(q.options?.length || 0) > 1 ? (
+                        <span style={{ color: T.grey, fontSize: 12 }}>ver opções</span>
+                      ) : (
+                        <><strong>{fmt(q.totalWithDiscount)}</strong>{q.discount > 0 && <div style={{ fontSize: 11, color: T.success }}>-{fmt(q.discount)} desc.</div>}</>
+                      )}
+                    </td>
                     <td style={{ color: T.grey, fontSize: 12 }}>{q.validUntil ? fmtDate(q.validUntil) : "—"}</td>
                     <td><span className={`badge ${statusBadge[q.status] || "badge-grey"}`}>{statusLabel[q.status] || q.status}</span></td>
                     <td>
@@ -4202,72 +4226,107 @@ function QuotationForm({ ctx, onClose, prefill = {}, editQuotation }) {
     appointmentId: editQuotation?.appointmentId || prefill.appointmentId || null,
   });
 
-  const [items, setItems] = useState(
-    editQuotation?.items?.length > 0
-      ? editQuotation.items.map((it) => ({ serviceId: it.serviceId, serviceName: it.serviceName, price: it.price, note: it.note }))
-      : [{ serviceId: "", serviceName: "", price: "", note: "" }]
-  );
+  // Initialize options from editQuotation or start with one empty option
+  const [options, setOptions] = useState(() => {
+    if (editQuotation?.options?.length > 0) {
+      return editQuotation.options.map((opt) => ({
+        label: opt.label,
+        discount: opt.discount || 0,
+        items: opt.items.length > 0
+          ? opt.items.map((it) => ({ serviceId: it.serviceId, serviceName: it.serviceName, price: it.price, note: it.note }))
+          : [{ serviceId: "", serviceName: "", price: "", note: "" }],
+      }));
+    }
+    return [{ label: "Opção 1", discount: 0, items: [{ serviceId: "", serviceName: "", price: "", note: "" }] }];
+  });
+
   const [saving, setSaving] = useState(false);
+  const sortedPatients = sortByName(patients);
+  const sortedServices = sortByName(services.filter((s) => s.active));
 
-  const total = items.reduce((s, it) => s + (+it.price || 0), 0);
-  const [discount, setDiscount] = useState(editQuotation?.discount || 0);
-  const totalWithDiscount = Math.max(0, total - (+discount || 0));
+  // Option-level helpers
+  function addOption() {
+    setOptions((prev) => [...prev, { label: `Opção ${prev.length + 1}`, discount: 0, items: [{ serviceId: "", serviceName: "", price: "", note: "" }] }]);
+  }
+  function removeOption(oi) {
+    if (options.length <= 1) return;
+    setOptions((prev) => prev.filter((_, j) => j !== oi));
+  }
+  function updateOptionLabel(oi, val) {
+    setOptions((prev) => prev.map((opt, j) => j === oi ? { ...opt, label: val } : opt));
+  }
+  function updateOptionDiscount(oi, val) {
+    setOptions((prev) => prev.map((opt, j) => j === oi ? { ...opt, discount: val } : opt));
+  }
 
-  function addItem() {
-    setItems((prev) => [...prev, { serviceId: "", serviceName: "", price: "", note: "" }]);
+  // Item-level helpers
+  function addItem(oi) {
+    setOptions((prev) => prev.map((opt, j) => j === oi ? { ...opt, items: [...opt.items, { serviceId: "", serviceName: "", price: "", note: "" }] } : opt));
   }
-  function removeItem(i) {
-    setItems((prev) => prev.filter((_, j) => j !== i));
+  function removeItem(oi, ii) {
+    setOptions((prev) => prev.map((opt, j) => j === oi
+      ? { ...opt, items: opt.items.length > 1 ? opt.items.filter((_, k) => k !== ii) : opt.items }
+      : opt));
   }
-  function updateItem(i, field, val) {
-    setItems((prev) => prev.map((it, j) => j === i ? { ...it, [field]: val } : it));
+  function updateItem(oi, ii, field, val) {
+    setOptions((prev) => prev.map((opt, j) => j === oi
+      ? { ...opt, items: opt.items.map((it, k) => k === ii ? { ...it, [field]: val } : it) }
+      : opt));
   }
-  function handleServiceSelect(i, serviceId) {
+  function handleServiceSelect(oi, ii, serviceId) {
     const svc = services.find((s) => String(s.id) === String(serviceId));
-    setItems((prev) => prev.map((it, j) => j === i ? { ...it, serviceId, serviceName: svc?.name || "", price: svc?.price || "" } : it));
+    setOptions((prev) => prev.map((opt, j) => j === oi
+      ? { ...opt, items: opt.items.map((it, k) => k === ii ? { ...it, serviceId, serviceName: svc?.name || "", price: svc?.price || "" } : it) }
+      : opt));
   }
 
-  function computeItems() {
-    const validItems = items.filter((it) => it.serviceName);
-    if (!validItems.length) return [];
-    const ratio = total > 0 ? totalWithDiscount / total : 1;
-    const mapped = validItems.map((it) => ({
-      serviceId: it.serviceId || null,
-      serviceName: it.serviceName,
-      price: +it.price || 0,
-      finalPrice: Math.round((+it.price || 0) * ratio * 100) / 100,
-      note: it.note || "",
-    }));
-    // Fix residual rounding on last item
-    const sumFinal = mapped.reduce((s, it) => s + it.finalPrice, 0);
-    const diff = Math.round((totalWithDiscount - sumFinal) * 100) / 100;
-    if (mapped.length > 0) mapped[mapped.length - 1].finalPrice += diff;
-    return mapped;
+  // Compute final options with proportional discount per option
+  function computeOptions() {
+    return options.map((opt) => {
+      const validItems = opt.items.filter((it) => it.serviceName);
+      if (!validItems.length) return { ...opt, items: [] };
+      const subtotal = validItems.reduce((s, it) => s + (+it.price || 0), 0);
+      const disc = Math.min(+opt.discount || 0, subtotal);
+      const totalAfterDisc = subtotal - disc;
+      const ratio = subtotal > 0 ? totalAfterDisc / subtotal : 1;
+      const mapped = validItems.map((it) => ({
+        serviceId: it.serviceId || null,
+        serviceName: it.serviceName,
+        price: +it.price || 0,
+        finalPrice: Math.round((+it.price || 0) * ratio * 100) / 100,
+        note: it.note || "",
+      }));
+      // Fix rounding residual on last item
+      const sumFinal = mapped.reduce((s, it) => s + it.finalPrice, 0);
+      const diff = Math.round((totalAfterDisc - sumFinal) * 100) / 100;
+      if (mapped.length > 0) mapped[mapped.length - 1].finalPrice += diff;
+      return { label: opt.label, discount: disc, items: mapped };
+    });
   }
 
   async function save() {
-    const validItems = computeItems();
-    if (!form.patientId || validItems.length === 0) return;
+    const computed = computeOptions();
+    const hasItems = computed.some((opt) => opt.items.length > 0);
+    if (!form.patientId || !hasItems) return;
     setSaving(true);
     try {
-      const qData = { ...form, total, discount: +discount || 0, totalWithDiscount, appointmentId: form.appointmentId };
       if (editing) {
-        const updated = await db.updateQuotation({ ...qData, id: editQuotation.id }, validItems);
+        const updated = await db.updateQuotation({ ...form, id: editQuotation.id }, computed);
         setQuotations((prev) => prev.map((x) => x.id === editQuotation.id ? updated : x));
       } else {
-        const created = await db.createQuotation(qData, validItems);
+        const created = await db.createQuotation(form, computed);
         setQuotations((prev) => [created, ...prev]);
       }
       onClose();
     } catch (e) {
       console.error("Erro ao salvar orçamento:", e);
+      alert("Erro ao salvar orçamento: " + (e.message || "tente novamente"));
     } finally {
       setSaving(false);
     }
   }
 
-  const sortedPatients = sortByName(patients);
-  const sortedServices = sortByName(services.filter((s) => s.active));
+  const multipleOptions = options.length > 1;
 
   return (
     <>
@@ -4308,54 +4367,77 @@ function QuotationForm({ ctx, onClose, prefill = {}, editQuotation }) {
           </select>
         </div>
 
-        {/* Items */}
-        <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8, marginTop: 4, color: T.teal }}>Procedimentos</div>
-        {items.map((it, i) => (
-          <div key={i} style={{ background: T.light, borderRadius: 10, padding: "12px 12px 8px", marginBottom: 10 }}>
-            <div className="form-row form-row-2" style={{ marginBottom: 6 }}>
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label style={{ fontSize: 12 }}>Procedimento</label>
-                <SearchSelect
-                  options={sortedServices.map((s) => ({ value: s.id, label: s.name }))}
-                  value={it.serviceId}
-                  onChange={(v) => handleServiceSelect(i, v)}
-                  placeholder="Buscar procedimento…"
-                />
+        {/* Options */}
+        {options.map((opt, oi) => {
+          const subtotal = opt.items.reduce((s, it) => s + (+it.price || 0), 0);
+          const disc = Math.min(+opt.discount || 0, subtotal);
+          const total = subtotal - disc;
+          return (
+            <div key={oi} style={{ border: `2px solid ${T.teal}`, borderRadius: 12, padding: 14, marginBottom: 16 }}>
+              {/* Option header */}
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                {multipleOptions ? (
+                  <input
+                    className="form-control"
+                    value={opt.label}
+                    onChange={(e) => updateOptionLabel(oi, e.target.value)}
+                    style={{ fontWeight: 700, color: T.teal, fontSize: 14, flex: 1 }}
+                  />
+                ) : (
+                  <span style={{ fontWeight: 700, fontSize: 14, color: T.teal, flex: 1 }}>Procedimentos</span>
+                )}
+                {multipleOptions && (
+                  <button className="btn btn-sm btn-danger" onClick={() => removeOption(oi)} title="Remover opção">🗑</button>
+                )}
               </div>
-              <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
-                <div className="form-group" style={{ marginBottom: 0, flex: 1 }}>
-                  <label style={{ fontSize: 12 }}>Valor (R$)</label>
-                  <input type="number" className="form-control" value={it.price}
-                    onChange={(e) => updateItem(i, "price", e.target.value)} />
-                </div>
-                <button className="btn btn-sm btn-danger" style={{ marginBottom: 2 }} onClick={() => removeItem(i)} disabled={items.length === 1}>🗑</button>
-              </div>
-            </div>
-            <div className="form-group" style={{ marginBottom: 0 }}>
-              <input className="form-control" value={it.note} placeholder="Observação opcional..."
-                onChange={(e) => updateItem(i, "note", e.target.value)} style={{ fontSize: 13 }} />
-            </div>
-          </div>
-        ))}
-        <button className="btn btn-secondary btn-sm" onClick={addItem} style={{ marginBottom: 16 }}>+ Adicionar procedimento</button>
 
-        {/* Totals */}
-        <div style={{ background: T.light, borderRadius: 10, padding: 14 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-            <span style={{ color: T.grey }}>Subtotal dos procedimentos</span>
-            <strong>{fmt(total)}</strong>
-          </div>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <span style={{ color: T.grey }}>Desconto (R$)</span>
-            <input type="number" className="form-control" style={{ width: 120, textAlign: "right" }}
-              value={discount} onChange={(e) => setDiscount(e.target.value)} min={0} max={total} />
-          </div>
-          <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 8, borderTop: `2px solid ${T.teal}` }}>
-            <strong style={{ color: T.teal }}>Total com Desconto</strong>
-            <strong style={{ color: T.teal, fontSize: 17 }}>{fmt(totalWithDiscount)}</strong>
-          </div>
-          {+discount > 0 && <div style={{ fontSize: 11, color: T.grey, marginTop: 4 }}>Desconto rateado proporcionalmente entre os procedimentos</div>}
-        </div>
+              {/* Items */}
+              {opt.items.map((it, ii) => (
+                <div key={ii} style={{ background: T.light, borderRadius: 10, padding: "12px 12px 8px", marginBottom: 10 }}>
+                  <div className="form-row form-row-2" style={{ marginBottom: 6 }}>
+                    <div className="form-group" style={{ marginBottom: 0 }}>
+                      <label style={{ fontSize: 12 }}>Procedimento</label>
+                      <SearchSelect
+                        options={sortedServices.map((s) => ({ value: s.id, label: s.name }))}
+                        value={it.serviceId}
+                        onChange={(v) => handleServiceSelect(oi, ii, v)}
+                        placeholder="Buscar procedimento…"
+                      />
+                    </div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+                      <div className="form-group" style={{ marginBottom: 0, flex: 1 }}>
+                        <label style={{ fontSize: 12 }}>Valor (R$)</label>
+                        <input type="number" className="form-control" value={it.price}
+                          onChange={(e) => updateItem(oi, ii, "price", e.target.value)} />
+                      </div>
+                      <button className="btn btn-sm btn-danger" style={{ marginBottom: 2 }} onClick={() => removeItem(oi, ii)} disabled={opt.items.length === 1}>🗑</button>
+                    </div>
+                  </div>
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <input className="form-control" value={it.note} placeholder="Observação opcional..."
+                      onChange={(e) => updateItem(oi, ii, "note", e.target.value)} style={{ fontSize: 13 }} />
+                  </div>
+                </div>
+              ))}
+              <button className="btn btn-secondary btn-sm" onClick={() => addItem(oi)} style={{ marginBottom: 12 }}>+ Adicionar procedimento</button>
+
+              {/* Option totals */}
+              <div style={{ borderTop: `1px solid ${T.blue}30`, paddingTop: 10, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ color: T.grey, fontSize: 13 }}>Desconto (R$):</span>
+                  <input type="number" className="form-control" style={{ width: 110 }}
+                    value={opt.discount} onChange={(e) => updateOptionDiscount(oi, e.target.value)} min={0} max={subtotal} />
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  {disc > 0 && <div style={{ fontSize: 12, color: T.grey }}>Subtotal: {fmt(subtotal)}&nbsp;&nbsp;Desconto: -{fmt(disc)}</div>}
+                  <strong style={{ color: T.teal, fontSize: 16 }}>Total: {fmt(total)}</strong>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+
+        <button className="btn btn-secondary btn-sm" onClick={addOption} style={{ marginBottom: 16 }}>+ Adicionar Opção</button>
       </div>
       <div className="modal-footer">
         <button className="btn btn-secondary" onClick={onClose}>Cancelar</button>
@@ -4413,37 +4495,38 @@ function QuotationDetailModal({ quot, ctx, onClose }) {
           <span style={{ color: T.grey, fontSize: 13 }}>{quot.professional}</span>
         </div>
 
-        {/* Items */}
-        <div style={{ fontWeight: 600, color: T.teal, marginBottom: 8 }}>Procedimentos</div>
-        {(quot.items || []).map((it, i) => (
-          <div key={i} style={{ padding: "10px 0", borderBottom: `1px solid ${T.light}` }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-              <div>
-                <span style={{ fontWeight: 600, fontSize: 14 }}>• {it.serviceName}</span>
-                {it.note && <div style={{ color: T.grey, fontSize: 12, marginTop: 3 }}>{it.note}</div>}
+        {/* Options / Items */}
+        {(quot.options || []).map((opt, oi) => {
+          const optSubtotal = opt.items.reduce((s, it) => s + (+it.price || 0), 0);
+          const optTotal = opt.items.reduce((s, it) => s + (+it.finalPrice || 0), 0);
+          const multipleOptions = (quot.options || []).length > 1;
+          return (
+            <div key={oi} style={{ marginBottom: 16 }}>
+              {multipleOptions && (
+                <div style={{ fontWeight: 700, color: T.teal, fontSize: 14, marginBottom: 6, borderBottom: `2px solid ${T.teal}`, paddingBottom: 4 }}>{opt.label}</div>
+              )}
+              {opt.items.map((it, i) => (
+                <div key={i} style={{ padding: "10px 0", borderBottom: `1px solid ${T.light}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                    <div>
+                      <span style={{ fontWeight: 600, fontSize: 14 }}>• {it.serviceName}</span>
+                      {it.note && <div style={{ color: T.grey, fontSize: 12, marginTop: 3 }}>{it.note}</div>}
+                    </div>
+                    <span style={{ fontWeight: 600, whiteSpace: "nowrap", marginLeft: 12 }}>{fmt(it.price)}</span>
+                  </div>
+                </div>
+              ))}
+              <div style={{ paddingTop: 8, textAlign: "right" }}>
+                {opt.discount > 0 && (
+                  <div style={{ fontSize: 12, color: T.grey, marginBottom: 2 }}>
+                    Subtotal: {fmt(optSubtotal)}&nbsp;&nbsp;Desconto: -{fmt(opt.discount)}
+                  </div>
+                )}
+                <strong style={{ color: T.teal }}>Total: {fmt(optTotal)}</strong>
               </div>
-              <span style={{ fontWeight: 600, whiteSpace: "nowrap", marginLeft: 12 }}>{fmt(it.finalPrice)}</span>
             </div>
-          </div>
-        ))}
-
-        {/* Totals */}
-        <div style={{ marginTop: 16, padding: "12px 0", borderTop: `2px solid ${T.teal}` }}>
-          {quot.discount > 0 && (
-            <>
-              <div style={{ display: "flex", justifyContent: "space-between", color: T.grey, fontSize: 13, marginBottom: 4 }}>
-                <span>Subtotal</span><span>{fmt(quot.total)}</span>
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", color: T.success, fontSize: 13, marginBottom: 8 }}>
-                <span>Desconto</span><span>-{fmt(quot.discount)}</span>
-              </div>
-            </>
-          )}
-          <div style={{ display: "flex", justifyContent: "space-between" }}>
-            <strong style={{ color: T.teal }}>Total</strong>
-            <strong style={{ color: T.teal, fontSize: 18 }}>{fmt(quot.totalWithDiscount)}</strong>
-          </div>
-        </div>
+          );
+        })}
 
         {/* Linked sales */}
         {linkedSales.length > 0 && (
@@ -4493,18 +4576,22 @@ function QuotationDetailModal({ quot, ctx, onClose }) {
 function ApproveQuotationModal({ quot, ctx, onClose }) {
   const { patients, setQuotations, setModal } = ctx;
   const patient = patients.find((p) => p.id === quot.patientId);
+  const multipleOptions = (quot.options || []).length > 1;
 
-  const [approvalItems, setApprovalItems] = useState(
-    (quot.items || []).map((it) => ({ ...it, included: true }))
+  // Flatten all items from all options, keeping optionLabel for display
+  const [approvalItems, setApprovalItems] = useState(() =>
+    (quot.options || []).flatMap((opt) =>
+      opt.items.map((it) => ({ ...it, included: true, optionLabel: opt.label }))
+    )
   );
 
   const total = approvalItems.filter((i) => i.included).reduce((s, i) => s + (+i.finalPrice || 0), 0);
 
-  function toggleItem(i, val) {
-    setApprovalItems((prev) => prev.map((x, j) => j === i ? { ...x, included: val } : x));
+  function toggleItem(idx, val) {
+    setApprovalItems((prev) => prev.map((x, j) => j === idx ? { ...x, included: val } : x));
   }
-  function updatePrice(i, val) {
-    setApprovalItems((prev) => prev.map((x, j) => j === i ? { ...x, finalPrice: +val } : x));
+  function updatePrice(idx, val) {
+    setApprovalItems((prev) => prev.map((x, j) => j === idx ? { ...x, finalPrice: +val } : x));
   }
 
   async function createSale() {
@@ -4526,6 +4613,14 @@ function ApproveQuotationModal({ quot, ctx, onClose }) {
     });
   }
 
+  // Group by optionLabel for display when multipleOptions
+  const grouped = multipleOptions
+    ? (quot.options || []).map((opt) => ({
+        label: opt.label,
+        items: approvalItems.filter((it) => it.optionLabel === opt.label),
+      }))
+    : [{ label: null, items: approvalItems }];
+
   return (
     <>
       <div className="modal-header">
@@ -4534,17 +4629,27 @@ function ApproveQuotationModal({ quot, ctx, onClose }) {
       </div>
       <div className="modal-body">
         <div style={{ color: T.grey, fontSize: 13, marginBottom: 16 }}>Selecione os procedimentos que o paciente aprovou e ajuste os valores se necessário.</div>
-        {approvalItems.map((it, i) => (
-          <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: `1px solid ${T.light}` }}>
-            <input type="checkbox" checked={it.included} onChange={(e) => toggleItem(i, e.target.checked)} style={{ width: 16, height: 16, cursor: "pointer" }} />
-            <span style={{ flex: 1, fontWeight: it.included ? 600 : 400, color: it.included ? T.dark : T.grey }}>{it.serviceName}</span>
-            {it.note && <span style={{ fontSize: 11, color: T.grey, maxWidth: 100 }}>{it.note}</span>}
-            <input type="number" className="form-control" style={{ width: 110 }} disabled={!it.included}
-              value={it.finalPrice} onChange={(e) => updatePrice(i, e.target.value)} />
+        {grouped.map((group, gi) => (
+          <div key={gi} style={{ marginBottom: multipleOptions ? 16 : 0 }}>
+            {multipleOptions && (
+              <div style={{ fontWeight: 700, color: T.teal, fontSize: 13, marginBottom: 6, paddingBottom: 4, borderBottom: `1px solid ${T.blue}40` }}>{group.label}</div>
+            )}
+            {group.items.map((it) => {
+              const idx = approvalItems.indexOf(it);
+              return (
+                <div key={idx} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: `1px solid ${T.light}` }}>
+                  <input type="checkbox" checked={it.included} onChange={(e) => toggleItem(idx, e.target.checked)} style={{ width: 16, height: 16, cursor: "pointer" }} />
+                  <span style={{ flex: 1, fontWeight: it.included ? 600 : 400, color: it.included ? T.dark : T.grey }}>{it.serviceName}</span>
+                  {it.note && <span style={{ fontSize: 11, color: T.grey, maxWidth: 100 }}>{it.note}</span>}
+                  <input type="number" className="form-control" style={{ width: 110 }} disabled={!it.included}
+                    value={it.finalPrice} onChange={(e) => updatePrice(idx, e.target.value)} />
+                </div>
+              );
+            })}
           </div>
         ))}
         <div style={{ marginTop: 16, textAlign: "right" }}>
-          <strong style={{ color: T.teal, fontSize: 17 }}>Total: {fmt(total)}</strong>
+          <strong style={{ color: T.teal, fontSize: 17 }}>Total selecionado: {fmt(total)}</strong>
         </div>
       </div>
       <div className="modal-footer">

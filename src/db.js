@@ -433,6 +433,34 @@ export async function deleteLocation(id) {
 
 // ── quotations ────────────────────────────────────────────────────────────────
 function mapQuotation(q) {
+  const allItems = (q.quotation_items || [])
+    .sort((a, b) => (a.option_group ?? 0) - (b.option_group ?? 0) || a.sort_order - b.sort_order)
+    .map((it) => ({
+      id: it.id,
+      serviceId: it.service_id || null,
+      serviceName: it.service_name,
+      price: it.price,
+      finalPrice: it.final_price,
+      note: it.note || "",
+      sortOrder: it.sort_order,
+      optionGroup: it.option_group ?? 0,
+    }));
+
+  // Group items by option_group
+  const byGroup = {};
+  allItems.forEach((it) => {
+    const g = it.optionGroup;
+    (byGroup[g] = byGroup[g] || []).push(it);
+  });
+
+  const optionConfigs = q.option_configs || [];
+  const numOptions = Math.max(Object.keys(byGroup).length, optionConfigs.length, 1);
+  const options = Array.from({ length: numOptions }, (_, i) => ({
+    label: optionConfigs[i]?.label || `Opção ${i + 1}`,
+    discount: optionConfigs[i]?.discount || 0,
+    items: byGroup[i] || [],
+  }));
+
   return {
     id: q.id,
     patientId: q.patient_id,
@@ -447,17 +475,9 @@ function mapQuotation(q) {
     totalWithDiscount: q.total_with_discount || 0,
     notes: q.notes || "",
     createdAt: q.created_at,
-    items: (q.quotation_items || [])
-      .sort((a, b) => a.sort_order - b.sort_order)
-      .map((it) => ({
-        id: it.id,
-        serviceId: it.service_id || null,
-        serviceName: it.service_name,
-        price: it.price,
-        finalPrice: it.final_price,
-        note: it.note || "",
-        sortOrder: it.sort_order,
-      })),
+    options,
+    // flat items for backward compat (replaceServiceReferences etc.)
+    items: allItems,
   };
 }
 
@@ -470,7 +490,28 @@ export async function fetchQuotations() {
   return data.map(mapQuotation);
 }
 
-export async function createQuotation(q, items) {
+// options = [{ label, discount, items: [{serviceId, serviceName, price, finalPrice, note}] }]
+function flattenOptionsToItems(options) {
+  return options.flatMap((opt, optIdx) =>
+    opt.items.map((it, i) => ({
+      serviceId: it.serviceId || null,
+      serviceName: it.serviceName,
+      price: it.price,
+      finalPrice: it.finalPrice,
+      note: it.note || "",
+      sortOrder: i,
+      optionGroup: optIdx,
+    }))
+  );
+}
+
+export async function createQuotation(q, options) {
+  const flatItems = flattenOptionsToItems(options);
+  const total = flatItems.reduce((s, it) => s + it.price, 0);
+  const totalWithDiscount = flatItems.reduce((s, it) => s + it.finalPrice, 0);
+  const discount = total - totalWithDiscount;
+  const optionConfigs = options.map((opt) => ({ label: opt.label, discount: opt.discount || 0 }));
+
   const { data, error } = await supabase.from("quotations").insert({
     patient_id: q.patientId,
     appointment_id: q.appointmentId || null,
@@ -479,23 +520,25 @@ export async function createQuotation(q, items) {
     valid_until: q.validUntil || null,
     location: q.location || "",
     status: "pending",
-    total: q.total,
-    discount: q.discount || 0,
-    total_with_discount: q.totalWithDiscount,
+    total,
+    discount,
+    total_with_discount: totalWithDiscount,
     notes: q.notes || "",
+    option_configs: optionConfigs,
   }).select().single();
   if (error) throw error;
 
-  if (items && items.length > 0) {
+  if (flatItems.length > 0) {
     const { error: itErr } = await supabase.from("quotation_items").insert(
-      items.map((it, i) => ({
+      flatItems.map((it) => ({
         quotation_id: data.id,
-        service_id: it.serviceId || null,
+        service_id: it.serviceId,
         service_name: it.serviceName,
         price: it.price,
         final_price: it.finalPrice,
-        note: it.note || "",
-        sort_order: i,
+        note: it.note,
+        sort_order: it.sortOrder,
+        option_group: it.optionGroup,
       }))
     );
     if (itErr) throw itErr;
@@ -510,7 +553,13 @@ export async function createQuotation(q, items) {
   return mapQuotation(full);
 }
 
-export async function updateQuotation(q, items) {
+export async function updateQuotation(q, options) {
+  const flatItems = flattenOptionsToItems(options);
+  const total = flatItems.reduce((s, it) => s + it.price, 0);
+  const totalWithDiscount = flatItems.reduce((s, it) => s + it.finalPrice, 0);
+  const discount = total - totalWithDiscount;
+  const optionConfigs = options.map((opt) => ({ label: opt.label, discount: opt.discount || 0 }));
+
   const { error } = await supabase.from("quotations").update({
     patient_id: q.patientId,
     appointment_id: q.appointmentId || null,
@@ -518,24 +567,26 @@ export async function updateQuotation(q, items) {
     date: q.date,
     valid_until: q.validUntil || null,
     location: q.location || "",
-    total: q.total,
-    discount: q.discount || 0,
-    total_with_discount: q.totalWithDiscount,
+    total,
+    discount,
+    total_with_discount: totalWithDiscount,
     notes: q.notes || "",
+    option_configs: optionConfigs,
   }).eq("id", q.id);
   if (error) throw error;
 
   await supabase.from("quotation_items").delete().eq("quotation_id", q.id);
-  if (items && items.length > 0) {
+  if (flatItems.length > 0) {
     const { error: itErr } = await supabase.from("quotation_items").insert(
-      items.map((it, i) => ({
+      flatItems.map((it) => ({
         quotation_id: q.id,
-        service_id: it.serviceId || null,
+        service_id: it.serviceId,
         service_name: it.serviceName,
         price: it.price,
         final_price: it.finalPrice,
-        note: it.note || "",
-        sort_order: i,
+        note: it.note,
+        sort_order: it.sortOrder,
+        option_group: it.optionGroup,
       }))
     );
     if (itErr) throw itErr;
