@@ -686,12 +686,16 @@ export async function createAttendance(attendance, procedures, products, current
     );
     if (ppe) throw ppe;
 
-    // Deduct stock for each product
+    // Agrega por productId antes de deduzir (evita sobrescrita se mesmo produto aparece em múltiplas linhas)
+    const qtyByProduct = {};
     for (const p of products) {
-      const prod = (currentProducts || []).find((x) => String(x.id) === String(p.productId));
+      qtyByProduct[p.productId] = (qtyByProduct[p.productId] || 0) + p.qty;
+    }
+    for (const [productId, totalQty] of Object.entries(qtyByProduct)) {
+      const prod = (currentProducts || []).find((x) => String(x.id) === String(productId));
       if (prod) {
-        const newQty = Math.max(0, prod.totalQty - p.qty);
-        await updateProductStock(p.productId, newQty, prod.avgCost);
+        const newQty = Math.max(0, prod.totalQty - totalQty);
+        await updateProductStock(productId, newQty, prod.avgCost);
       }
     }
   }
@@ -889,6 +893,15 @@ export async function createManualExit(exit) {
 
 export async function deleteManualExit(id, productId, qty, currentProduct) {
   const { error } = await supabase.from("stock_manual_exits").delete().eq("id", id);
+  if (error) throw error;
+  if (currentProduct) {
+    await updateProductStock(productId, currentProduct.totalQty + qty, currentProduct.avgCost);
+  }
+}
+
+// Exclui uma linha individual de produto em um atendimento e reverte o estoque
+export async function deleteAttendanceProduct(attendanceProductId, productId, qty, currentProduct) {
+  const { error } = await supabase.from("attendance_products").delete().eq("id", attendanceProductId);
   if (error) throw error;
   if (currentProduct) {
     await updateProductStock(productId, currentProduct.totalQty + qty, currentProduct.avgCost);

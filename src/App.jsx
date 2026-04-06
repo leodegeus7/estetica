@@ -2496,7 +2496,7 @@ function AttendanceViewModal({ appointment, attendance, ctx, onClose }) {
 
 // ─── ATTENDANCE FORM ──────────────────────────────────────────────────────────
 function AttendanceForm({ appointment, ctx, onClose }) {
-  const { patients, services, products, sales, attendances, setAttendances, setProducts, setAppointments } = ctx;
+  const { patients, services, products, sales, attendances, setAttendances, setProducts, setAppointments, appointments } = ctx;
   const patient = patients.find((p) => String(p.id) === String(appointment.patientId));
   const pendingProcedures = calcPendingProcedures(appointment.patientId, sales, attendances);
 
@@ -2507,10 +2507,27 @@ function AttendanceForm({ appointment, ctx, onClose }) {
   const [notes, setNotes] = useState("");
   const [date, setDate] = useState(appointment.date);
   const [saving, setSaving] = useState(false);
+  // Ref síncrono para evitar dupla submissão (setSaving é async no React)
+  const savingRef = useRef(false);
 
   const sortedProducts = sortByName(products);
 
   async function save() {
+    // Guard síncrono: impede dupla chamada antes do re-render
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+
+    // Verifica se o agendamento já foi finalizado (proteção extra contra duplicatas)
+    const currentAppt = (appointments || []).find((a) => String(a.id) === String(appointment.id));
+    if (currentAppt?.status === "done") {
+      // Já finalizado — apenas abre o modal de compromissos sem salvar de novo
+      savingRef.current = false;
+      setSaving(false);
+      onClose();
+      return;
+    }
+
     const procs = procedures.filter((p) => +p.qtyToUse > 0).map((p) => ({
       serviceId: p.serviceId, serviceName: p.serviceName || (services.find((s) => String(s.id) === String(p.serviceId))?.name || ""), qtyUsed: +p.qtyToUse,
     }));
@@ -2518,7 +2535,6 @@ function AttendanceForm({ appointment, ctx, onClose }) {
       const prod = products.find((x) => String(x.id) === String(p.productId));
       return { productId: p.productId, qty: +p.qty, costAtUse: prod?.avgCost || 0, note: p.note };
     });
-    setSaving(true);
     try {
       // Só salva no banco se houver dados para registrar
       if (procs.length > 0 || prods.length > 0 || notes) {
@@ -2565,6 +2581,7 @@ function AttendanceForm({ appointment, ctx, onClose }) {
     } catch (e) {
       console.error("Erro ao salvar atendimento:", e);
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   }
@@ -3070,12 +3087,15 @@ function ManualExitForm({ ctx, onClose }) {
 // ─── STOCK ────────────────────────────────────────────────────────────────────
 function StockPage({ ctx }) {
   const { products, stockEntries, setModal, setProducts, setStockEntries, suppliers, setSuppliers,
-          attendances, manualExits, setManualExits, patients } = ctx;
+          attendances, setAttendances, manualExits, setManualExits, patients } = ctx;
   const [tab, setTab] = useState("stock");
   const [newSupplierName, setNewSupplierName] = useState("");
   const [supplierError, setSupplierError] = useState("");
   const [savingSupplier, setSavingSupplier] = useState(false);
   const [deletingSupId, setDeletingSupId] = useState(null);
+  // Confirmação de exclusão de saída de atendimento: chave = "attId-prodId-index"
+  const [confirmExitKey, setConfirmExitKey] = useState(null);
+  const [deletingExitKey, setDeletingExitKey] = useState(null);
 
   function openNew() { setModal({ content: <ProductForm ctx={ctx} onClose={() => setModal(null)} />, onClose: () => setModal(null) }); }
   function openEditProduct(product) { setModal({ content: <ProductForm ctx={ctx} product={product} onClose={() => setModal(null)} />, onClose: () => setModal(null) }); }
@@ -3146,6 +3166,8 @@ function StockPage({ ctx }) {
       qty: p.qty,
       note: p.note || "",
       attendance: att,
+      attendanceId: att.id,
+      attendanceProductId: p.id,  // attendance_products.id — necessário para exclusão individual
       patientId: att.patientId,
     }))
   );
@@ -3170,6 +3192,33 @@ function StockPage({ ctx }) {
         setProducts((prev) => prev.map((p) => p.id === prod.id ? { ...p, totalQty: p.totalQty + exitObj.qty } : p));
       }
     } catch (e) { console.error(e); }
+  }
+
+  async function deleteAttendanceProductEntry(exit, exitKey) {
+    const prod = products.find((p) => String(p.id) === String(exit.productId));
+    setDeletingExitKey(exitKey);
+    try {
+      // exit.attendance.products[i].id é o attendance_products.id
+      const apId = exit.attendanceProductId;
+      await db.deleteAttendanceProduct(apId, exit.productId, exit.qty, prod);
+      // Atualiza estoque local
+      if (prod) {
+        setProducts((prev) => prev.map((p) =>
+          String(p.id) === String(prod.id) ? { ...p, totalQty: p.totalQty + exit.qty } : p
+        ));
+      }
+      // Remove a linha do attendance.products no estado local
+      setAttendances((prev) => prev.map((att) => {
+        if (String(att.id) !== String(exit.attendanceId)) return att;
+        return { ...att, products: att.products.filter((p) => String(p.id) !== String(apId)) };
+      }));
+      setConfirmExitKey(null);
+    } catch (e) {
+      console.error("Erro ao excluir saída:", e);
+      alert("Erro ao excluir saída: " + (e.message || "tente novamente"));
+    } finally {
+      setDeletingExitKey(null);
+    }
   }
 
   return (
@@ -3303,8 +3352,14 @@ function StockPage({ ctx }) {
                 {allExits.map((exit, i) => {
                   const prod = products.find((p) => String(p.id) === String(exit.productId));
                   const pat = exit.patientId ? patients.find((p) => String(p.id) === String(exit.patientId)) : null;
+                  // Chave única para controle de confirmação por linha
+                  const exitKey = exit.type === "attendance"
+                    ? `att-${exit.attendanceId}-${exit.attendanceProductId}`
+                    : `man-${exit.exitId}`;
+                  const isConfirming = confirmExitKey === exitKey;
+                  const isDeleting = deletingExitKey === exitKey;
                   return (
-                    <tr key={i}>
+                    <tr key={i} style={isConfirming ? { background: "#fff8f8" } : undefined}>
                       <td>{fmtDate(exit.date)}</td>
                       <td>{prod?.name || "—"}</td>
                       <td style={{ fontWeight: 600, color: T.danger }}>-{exit.qty} {prod?.unit || ""}</td>
@@ -3318,7 +3373,7 @@ function StockPage({ ctx }) {
                         {exit.type === "attendance" ? (pat?.name || "—") : (exit.note || "—")}
                       </td>
                       <td>
-                        <div style={{ display: "flex", gap: 4 }}>
+                        <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
                           {exit.type === "attendance" && exit.attendance && (
                             <button className="btn btn-sm btn-secondary"
                               onClick={() => {
@@ -3327,6 +3382,32 @@ function StockPage({ ctx }) {
                               }}>
                               👁 Ver
                             </button>
+                          )}
+                          {/* Exclusão individual de saída de atendimento (reverte estoque) */}
+                          {exit.type === "attendance" && exit.attendanceProductId && (
+                            isConfirming ? (
+                              <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                                <span style={{ fontSize: 11, color: T.danger, whiteSpace: "nowrap" }}>
+                                  Excluir e reverter +{exit.qty} {prod?.unit}?
+                                </span>
+                                <button className="btn btn-sm btn-danger"
+                                  disabled={isDeleting}
+                                  onClick={() => deleteAttendanceProductEntry(exit, exitKey)}>
+                                  {isDeleting ? "…" : "✓ Sim"}
+                                </button>
+                                <button className="btn btn-sm btn-ghost"
+                                  disabled={isDeleting}
+                                  onClick={() => setConfirmExitKey(null)}>
+                                  Não
+                                </button>
+                              </div>
+                            ) : (
+                              <button className="btn btn-sm btn-danger"
+                                title="Excluir esta saída e reverter o estoque"
+                                onClick={() => setConfirmExitKey(exitKey)}>
+                                🗑
+                              </button>
+                            )
                           )}
                           {exit.type === "manual" && exit.exitObj && (
                             <button className="btn btn-sm btn-danger"
