@@ -49,7 +49,17 @@
       "Bash(cp /tmp/docx_extracted/word/media/image5.png /Users/leodegeus/estetica/public/pdf-assets/icon-insta.png)",
       "Bash(npm install:*)",
       "Bash(npm list:*)",
-      "Bash(supabase --version)"
+      "Bash(supabase --version)",
+      "Bash(/usr/local/bin/node --version)",
+      "Bash(/opt/homebrew/bin/node --version)",
+      "Bash(/opt/homebrew/bin/npm run:*)",
+      "Read(//usr/local/bin/**)",
+      "Read(//opt/homebrew/**)",
+      "Bash(ls /opt/homebrew/bin/node*)",
+      "Bash(PATH=\"/opt/homebrew/bin:$PATH\" npm run build)",
+      "Bash(node -e \"require\\(''''fs''''\\).readFileSync\\(''''src/App.jsx'''',''''utf8''''\\)\")",
+      "Bash(/opt/homebrew/Cellar/node/25.9.0_1/bin/node -e \":*)",
+      "Bash(/opt/homebrew/Cellar/node/25.9.0_1/bin/node node_modules/.bin/vite build)"
     ]
   }
 }

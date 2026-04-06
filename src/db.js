@@ -894,3 +894,116 @@ export async function deleteManualExit(id, productId, qty, currentProduct) {
     await updateProductStock(productId, currentProduct.totalQty + qty, currentProduct.avgCost);
   }
 }
+
+// ── commitments ───────────────────────────────────────────────────────────────
+
+function mapCommitment(row) {
+  return {
+    id:            row.id,
+    title:         row.title,
+    description:   row.description || "",
+    status:        row.status,
+    urgency:       row.urgency,
+    dueDate:       row.due_date || null,
+    type:          row.type,
+    patientId:     row.patient_id || null,
+    procedureId:   row.procedure_id || null,
+    isFuture:      row.is_future,
+    sortOrder:     row.sort_order,
+    createdAt:     row.created_at,
+    completedAt:   row.completed_at || null,
+    patientName:   row.patients?.name  || null,
+    patientPhone:  row.patients?.phone || null,
+    procedureName: row.services?.name  || null,
+  };
+}
+
+export async function fetchCommitments() {
+  const { data, error } = await supabase
+    .from("commitments")
+    .select("*, patients(name, phone), services(name)")
+    .order("sort_order", { ascending: true })
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return data.map(mapCommitment);
+}
+
+export async function createCommitment(c) {
+  const { data, error } = await supabase
+    .from("commitments")
+    .insert({
+      title:        c.title,
+      description:  c.description || "",
+      status:       c.status || "pending",
+      urgency:      c.urgency || "medium",
+      due_date:     c.dueDate || null,
+      type:         c.type || "custom",
+      patient_id:   c.patientId || null,
+      procedure_id: c.procedureId || null,
+      is_future:    c.isFuture || false,
+      sort_order:   c.sortOrder ?? 100,
+    })
+    .select("*, patients(name, phone), services(name)")
+    .single();
+  if (error) throw error;
+  return mapCommitment(data);
+}
+
+export async function updateCommitment(c) {
+  const patch = {
+    title:        c.title,
+    description:  c.description || "",
+    status:       c.status,
+    urgency:      c.urgency,
+    due_date:     c.dueDate || null,
+    type:         c.type,
+    patient_id:   c.patientId || null,
+    procedure_id: c.procedureId || null,
+    is_future:    c.isFuture,
+    sort_order:   c.sortOrder,
+  };
+  if (c.status === "done") {
+    patch.completed_at = c.completedAt || new Date().toISOString();
+  } else {
+    patch.completed_at = null;
+  }
+  const { data, error } = await supabase
+    .from("commitments")
+    .update(patch)
+    .eq("id", c.id)
+    .select("*, patients(name, phone), services(name)")
+    .single();
+  if (error) throw error;
+  return mapCommitment(data);
+}
+
+export async function deleteCommitment(id) {
+  const { error } = await supabase.from("commitments").delete().eq("id", id);
+  if (error) throw error;
+}
+
+export async function updateCommitmentOrder(items) {
+  for (const item of items) {
+    await supabase.from("commitments").update({ sort_order: item.sortOrder }).eq("id", item.id);
+  }
+}
+
+// ── app_settings ──────────────────────────────────────────────────────────────
+
+export async function fetchAppSettings() {
+  const { data, error } = await supabase
+    .from("app_settings")
+    .select("*")
+    .eq("id", 1)
+    .single();
+  if (error) throw error;
+  return { commitmentTemplates: data.commitment_templates || {} };
+}
+
+export async function updateAppSettings(s) {
+  const { error } = await supabase
+    .from("app_settings")
+    .update({ commitment_templates: s.commitmentTemplates })
+    .eq("id", 1);
+  if (error) throw error;
+}

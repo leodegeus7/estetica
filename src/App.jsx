@@ -117,6 +117,8 @@ const fmtDate = (d) => d ? new Date(d + "T12:00:00").toLocaleDateString("pt-BR")
 const today = () => new Date().toISOString().slice(0, 10);
 const addDays = (d, n) => { const dt = new Date(d + "T12:00:00"); dt.setDate(dt.getDate() + n); return dt.toISOString().slice(0, 10); };
 const sortByName = (arr) => [...arr].sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+// Guard para evitar duplicatas de aniversário no StrictMode (efeitos rodando 2x em dev)
+const _birthdayGuard = new Set();
 
 // Clean phone to digits only
 const cleanPhone = (p) => (p || "").replace(/\D/g, "");
@@ -367,6 +369,20 @@ const css = `
       font-size: 20px; cursor: pointer; padding: 4px;
     }
   }
+
+  /* ── Kanban ── */
+  .kanban-board { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; align-items: start; }
+  .kanban-col { background: ${T.light}; border-radius: 12px; padding: 12px; min-height: 200px; transition: background 0.15s; }
+  .kanban-col.drag-over { background: #D5E5EE; }
+  .kanban-col-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 12px; font-weight: 600; color: ${T.grey}; text-transform: uppercase; letter-spacing: 0.08em; }
+  .kanban-col-count { background: white; color: ${T.teal}; font-weight: 700; font-size: 12px; padding: 2px 8px; border-radius: 20px; min-width: 24px; text-align: center; }
+  .commitment-card { background: white; border-radius: 10px; padding: 12px 14px; margin-bottom: 8px; box-shadow: 0 1px 3px rgba(17,41,51,0.07); cursor: grab; transition: box-shadow 0.15s, opacity 0.15s; border-left: 3px solid transparent; }
+  .commitment-card:hover { box-shadow: 0 3px 10px rgba(17,41,51,0.13); }
+  .commitment-card.dragging { opacity: 0.35; }
+  .commitment-card.drag-over { border-top: 2px solid ${T.blue}; }
+  .commitment-card-title { font-weight: 600; font-size: 13.5px; color: ${T.dark}; margin-bottom: 3px; }
+  .commitment-card-sub { font-size: 12px; color: ${T.grey}; margin-bottom: 2px; }
+  @media (max-width: 900px) { .kanban-board { grid-template-columns: 1fr; } }
 `;
 
 // ─── ROOT ─────────────────────────────────────────────────────────────────────
@@ -458,6 +474,15 @@ function MainApp({ user, onLogout }) {
   const [attendances, setAttendances] = useState([]);
   const [manualExits, setManualExits] = useState([]);
   const [tasks, setTasks] = useState([]);
+  const [commitments, setCommitments] = useState([]);
+  const [appSettings, setAppSettings] = useState({
+    commitmentTemplates: {
+      recurrence: "Olá, {patient_name}! 😊 Passando para lembrar que está na hora do seu retorno para {procedure_name}. Podemos agendar?",
+      feedback:   "Olá, {patient_name}! Como você está se sentindo após o procedimento de {procedure_name}? 😊",
+      birthday:   "Feliz aniversário, {patient_name}! 🎉 A equipe da Clínica Dr. Murilo do Valle deseja um dia maravilhoso!",
+    },
+  });
+  const [pendingRecurrence, setPendingRecurrence] = useState(null);
   const [modal, setModal] = useState(null);
   const [pendingReturn, setPendingReturn] = useState(null);
   const [dataLoading, setDataLoading] = useState(true);
@@ -480,7 +505,9 @@ function MainApp({ user, onLogout }) {
       db.fetchAttendances().catch(() => []),
       db.fetchTasks().catch(() => []),
       db.fetchManualExits().catch(() => []),
-    ]).then(([locs, prods, stock, svcs, pats, sls, cts, appts, quots, supps, atts, tsks, mexits]) => {
+      db.fetchCommitments().catch(() => []),
+      db.fetchAppSettings().catch(() => null),
+    ]).then(([locs, prods, stock, svcs, pats, sls, cts, appts, quots, supps, atts, tsks, mexits, comms, settings]) => {
       setLocations(locs.length > 0 ? locs : INIT_LOCATIONS);
       setProducts(prods);
       setStockEntries(stock);
@@ -494,6 +521,10 @@ function MainApp({ user, onLogout }) {
       setAttendances(atts || []);
       setTasks(tsks || []);
       setManualExits(mexits || []);
+      setCommitments(comms || []);
+      if (settings?.commitmentTemplates && Object.keys(settings.commitmentTemplates).length > 0) {
+        setAppSettings(settings);
+      }
       setDataLoading(false);
     }).catch((err) => {
       console.error("Erro ao carregar dados:", err);
@@ -541,11 +572,85 @@ function MainApp({ user, onLogout }) {
     attendances, setAttendances,
     manualExits, setManualExits,
     tasks, setTasks,
+    commitments, setCommitments,
+    appSettings, setAppSettings,
+    pendingRecurrence, setPendingRecurrence,
     gcalMappings, setGcalMappings,
     gcalSyncing, gcalLastSync,
     triggerSync,
     db,
   };
+
+  // Auto-promote future commitments whose due_date has arrived
+  useEffect(() => {
+    if (dataLoading || commitments.length === 0) return;
+    const todayStr = today();
+    const toPromote = commitments.filter((c) => c.isFuture && c.dueDate && c.dueDate <= todayStr);
+    if (toPromote.length === 0) return;
+    (async () => {
+      const updated = await Promise.all(
+        toPromote.map((c) => db.updateCommitment({ ...c, isFuture: false, status: "pending" }))
+      );
+      setCommitments((prev) =>
+        prev.map((c) => { const u = updated.find((x) => x.id === c.id); return u || c; })
+      );
+    })();
+  }, [dataLoading]);
+
+  // Auto-create birthday commitments (14-day lookahead)
+  useEffect(() => {
+    if (dataLoading || patients.length === 0) return;
+    let cancelled = false; // guard against React StrictMode double-run
+    const todayStr = today();
+    const currentYear = new Date().getFullYear();
+    const window14 = addDays(todayStr, 14);
+    const snapshot = commitments;
+    (async () => {
+      for (const patient of patients) {
+        if (cancelled) break;
+        if (!patient.birthdate) continue;
+        const bd = patient.birthdate.slice(5); // MM-DD
+        const birthdayThisYear = `${currentYear}-${bd}`;
+        if (birthdayThisYear > window14) continue;
+        const guardKey = `${patient.id}-${currentYear}`;
+        const alreadyExists = _birthdayGuard.has(guardKey) || snapshot.some(
+          (c) => c.type === "birthday" &&
+                 String(c.patientId) === String(patient.id) &&
+                 (c.dueDate || "").startsWith(String(currentYear))
+        );
+        if (alreadyExists) continue;
+        _birthdayGuard.add(guardKey); // marca antes do await para bloquear a 2ª run do StrictMode
+        try {
+          const isFuture = birthdayThisYear > todayStr;
+          const newC = await db.createCommitment({
+            title:       `Aniversário: ${patient.name}`,
+            description: `Nascimento: ${fmtDate(patient.birthdate)}`,
+            status:      "pending",
+            urgency:     "medium",
+            dueDate:     birthdayThisYear,
+            type:        "birthday",
+            patientId:   patient.id,
+            isFuture,
+            sortOrder:   100,
+          });
+          if (!cancelled) setCommitments((prev) => [newC, ...prev]);
+        } catch (e) {
+          _birthdayGuard.delete(guardKey); // libera se falhou, para tentar na próxima visita
+          if (!cancelled) console.error("Birthday commitment error:", e);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [dataLoading, patients]);
+
+  // Open RecurrenceModal after AttendanceForm closes
+  useEffect(() => {
+    if (!pendingRecurrence) return;
+    setModal({
+      content: <RecurrenceModal pr={pendingRecurrence} ctx={ctx} onClose={() => { setModal(null); setPendingRecurrence(null); }} />,
+      onClose: () => { setModal(null); setPendingRecurrence(null); },
+    });
+  }, [pendingRecurrence]);
 
   useEffect(() => {
     if (!pendingReturn) return;
@@ -565,6 +670,7 @@ function MainApp({ user, onLogout }) {
   const NAV = [
     { id: "dashboard", icon: "🏠", label: "Dashboard" },
     { id: "appointments", icon: "📅", label: "Agenda", group: "op" },
+    { id: "commitments", icon: "✅", label: "Compromissos", group: "op" },
     { id: "quotations", icon: "📋", label: "Orçamentos", group: "op" },
     { id: "sales", icon: "💳", label: "Vendas", group: "op" },
     { id: "patients", icon: "👤", label: "Pacientes", group: "op" },
@@ -578,7 +684,7 @@ function MainApp({ user, onLogout }) {
   const groups = {};
   NAV.forEach((n) => { const g = n.group || "main"; (groups[g] = groups[g] || []).push(n); });
 
-  const PAGES = { dashboard: DashboardPage, appointments: AppointmentsPage, sales: SalesPage, quotations: QuotationsPage, patients: PatientsPage, stock: StockPage, services: ServicesPage, costs: CostsPage, locations: LocationsPage, finance: FinancePage, gcal: GoogleCalendarSettingsPage };
+  const PAGES = { dashboard: DashboardPage, appointments: AppointmentsPage, commitments: CommitmentsPage, sales: SalesPage, quotations: QuotationsPage, patients: PatientsPage, stock: StockPage, services: ServicesPage, costs: CostsPage, locations: LocationsPage, finance: FinancePage, gcal: GoogleCalendarSettingsPage };
   const PageComponent = PAGES[page] || DashboardPage;
 
   // Bottom nav: 4 pinned + "Mais" drawer
@@ -975,7 +1081,7 @@ function TaskDetailModal({ task, onDelete, onEdit, onClose }) {
 
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
 function DashboardPage({ ctx }) {
-  const { sales, costs, patients, appointments, products, services, attendances, setModal, setPage } = ctx;
+  const { sales, costs, patients, appointments, products, services, attendances, commitments, setModal, setPage } = ctx;
   const todayStr = today();
   const curMonth = todayStr.slice(0, 7);
 
@@ -1014,7 +1120,8 @@ function DashboardPage({ ctx }) {
 
   const pendingFillAppts = appointments.filter((a) => a.status === "scheduled" && a.date < todayStr);
   const pendingDrafts = appointments.filter((a) => a.status === "draft");
-  const hasAlerts = latePatients.length > 0 || latePix.length > 0 || lowStock.length > 0 || birthdaySoon.length > 0 || pendingFillAppts.length > 0 || pendingDrafts.length > 0;
+  const pendingCommitments = (commitments || []).filter((c) => !c.isFuture && c.status !== "done");
+  const hasAlerts = latePatients.length > 0 || latePix.length > 0 || lowStock.length > 0 || birthdaySoon.length > 0 || pendingFillAppts.length > 0 || pendingDrafts.length > 0 || pendingCommitments.length > 0;
 
   return (
     <div>
@@ -1036,6 +1143,15 @@ function DashboardPage({ ctx }) {
                 <div style={{ marginTop: 4, fontSize: 12, cursor: "pointer", textDecoration: "underline" }} onClick={() => setPage("appointments")}>
                   Acesse a Agenda para completar →
                 </div>
+              </div>
+            </div>
+          )}
+
+          {pendingCommitments.length > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              <div className="alert alert-info" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <strong>📋 {pendingCommitments.length} compromisso(s) pendentes aguardando ação</strong>
+                <button className="btn btn-sm btn-secondary" style={{ marginLeft: 12 }} onClick={() => setPage("commitments")}>Ver →</button>
               </div>
             </div>
           )}
@@ -1205,7 +1321,7 @@ function AppointmentsPage({ ctx }) {
   const pendingFill = nonDrafts.filter((a) => a.status === "scheduled" && a.date < todayStr);
 
   const grouped = {
-    today: nonDrafts.filter((a) => a.date === todayStr),
+    today: nonDrafts.filter((a) => a.date === todayStr || (a.status === "scheduled" && a.date < todayStr)),
     upcoming: nonDrafts.filter((a) => a.date > todayStr),
     past: nonDrafts.filter((a) => a.date < todayStr),
     fill: pendingFill,
@@ -1255,7 +1371,17 @@ function AppointmentsPage({ ctx }) {
     setModal({ lg: true, content: <AttendanceViewModal appointment={appt} attendance={att} ctx={ctx} onClose={() => setModal(null)} />, onClose: () => setModal(null) });
   }
 
-  const list = (grouped[tab] || []).sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+  // Na aba Hoje: agendamentos de hoje primeiro (por horário), depois pendentes de dias anteriores (por data desc)
+  const list = (grouped[tab] || []).sort((a, b) => {
+    if (tab === "today") {
+      const aIsToday = a.date === todayStr;
+      const bIsToday = b.date === todayStr;
+      if (aIsToday && !bIsToday) return -1;
+      if (!aIsToday && bIsToday) return 1;
+      if (!aIsToday && !bIsToday) return b.date.localeCompare(a.date); // mais recente primeiro
+    }
+    return a.date.localeCompare(b.date) || a.time.localeCompare(b.time);
+  });
 
   return (
     <div>
@@ -1306,12 +1432,24 @@ function AppointmentsPage({ ctx }) {
             <thead><tr><th>Data</th><th>Hora</th><th>Paciente</th><th>Tipo</th><th>Procedimento</th><th>Dur.</th><th>Status</th><th>Ações</th></tr></thead>
             <tbody>
               {list.length === 0 && <tr><td colSpan={8}><div className="empty">Nenhum agendamento</div></td></tr>}
-              {list.map((a) => {
+              {list.map((a, idx) => {
                 const p = patients.find((x) => String(x.id) === String(a.patientId));
                 const s = services.find((x) => String(x.id) === String(a.serviceId));
                 const statusInfo = apptStatusInfo(a);
+                // Separador entre agendamentos de hoje e pendentes de dias anteriores (tab Hoje)
+                const isPending = tab === "today" && a.date !== todayStr;
+                const prevIsPending = idx > 0 && tab === "today" && list[idx - 1].date !== todayStr;
+                const showSeparator = isPending && !prevIsPending;
                 return (
-                  <tr key={a.id}>
+                  <>
+                    {showSeparator && (
+                      <tr key={`sep-${a.id}`}>
+                        <td colSpan={8} style={{ padding: "8px 12px", background: "#fff8e1", borderTop: `2px solid ${T.warning}`, borderBottom: `1px solid #ffe082` }}>
+                          <span style={{ fontSize: 12, fontWeight: 600, color: T.warning }}>⏳ Pendentes de preenchimento</span>
+                        </td>
+                      </tr>
+                    )}
+                  <tr key={a.id} style={isPending ? { background: "#fffbf0" } : undefined}>
                     <td>{fmtDate(a.date)}</td>
                     <td><strong>{a.time}</strong></td>
                     <td>{p?.name}</td>
@@ -1346,6 +1484,7 @@ function AppointmentsPage({ ctx }) {
                       </div>
                     </td>
                   </tr>
+                  </>
                 );
               })}
             </tbody>
@@ -2379,24 +2518,50 @@ function AttendanceForm({ appointment, ctx, onClose }) {
       const prod = products.find((x) => String(x.id) === String(p.productId));
       return { productId: p.productId, qty: +p.qty, costAtUse: prod?.avgCost || 0, note: p.note };
     });
-    if (procs.length === 0 && prods.length === 0 && !notes) return;
     setSaving(true);
     try {
-      const created = await db.createAttendance(
-        { appointmentId: appointment.id, patientId: appointment.patientId, date, notes },
-        procs, prods, products
-      );
-      setAttendances((prev) => [created, ...prev]);
-      setAppointments((prev) => prev.map((a) => String(a.id) === String(appointment.id) ? { ...a, status: "done" } : a));
-      // Update local product state
-      for (const p of prods) {
-        const prod = products.find((x) => String(x.id) === String(p.productId));
-        if (prod) {
-          const newQty = Math.max(0, prod.totalQty - p.qty);
-          setProducts((prev) => prev.map((x) => String(x.id) === String(prod.id) ? { ...x, totalQty: newQty } : x));
+      // Só salva no banco se houver dados para registrar
+      if (procs.length > 0 || prods.length > 0 || notes) {
+        const created = await db.createAttendance(
+          { appointmentId: appointment.id, patientId: appointment.patientId, date, notes },
+          procs, prods, products
+        );
+        setAttendances((prev) => [created, ...prev]);
+        setAppointments((prev) => prev.map((a) => String(a.id) === String(appointment.id) ? { ...a, status: "done" } : a));
+        // Update local product state
+        for (const p of prods) {
+          const prod = products.find((x) => String(x.id) === String(p.productId));
+          if (prod) {
+            const newQty = Math.max(0, prod.totalQty - p.qty);
+            setProducts((prev) => prev.map((x) => String(x.id) === String(prod.id) ? { ...x, totalQty: newQty } : x));
+          }
         }
       }
       onClose();
+      // Sempre abre modal de compromissos ao finalizar atendimento
+      const procInfo = procs.map((p) => ({
+        ...p,
+        service: services.find((s) => String(s.id) === String(p.serviceId)),
+      }));
+      // Inclui também todos os serviços da venda pendente (mesmo sem qty registrada agora)
+      const allProcInfo = pendingProcedures.map((p) => ({
+        serviceId: p.serviceId,
+        serviceName: p.serviceName || services.find((s) => String(s.id) === String(p.serviceId))?.name || "",
+        service: services.find((s) => String(s.id) === String(p.serviceId)),
+      }));
+      const modalProcs = procInfo.length > 0 ? procInfo : allProcInfo;
+      setTimeout(() => {
+        ctx.setModal({
+          content: (
+            <RecurrenceModal
+              pr={{ patient, procedures: modalProcs, attendanceDate: date }}
+              ctx={ctx}
+              onClose={() => ctx.setModal(null)}
+            />
+          ),
+          onClose: () => ctx.setModal(null),
+        });
+      }, 120);
     } catch (e) {
       console.error("Erro ao salvar atendimento:", e);
     } finally {
@@ -4903,6 +5068,678 @@ function LocationsPage({ ctx }) {
             </tbody>
           </table>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// COMPROMISSOS MODULE
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── Helper: fill WhatsApp template ──────────────────────────────────────────
+function fillCommitmentTemplate(appSettings, c) {
+  const tpl = (appSettings?.commitmentTemplates || {})[c.type] ||
+               (appSettings?.commitmentTemplates || {}).feedback || "";
+  // procedureName direto do JOIN; fallback: extrair da description ("Procedimentos: X") ou do título após " — "
+  let procedureName = c.procedureName || "";
+  if (!procedureName && c.description) {
+    const m = c.description.match(/^Procedimentos?:\s*(.+)$/i);
+    if (m) procedureName = m[1].trim();
+  }
+  if (!procedureName && c.title) {
+    const m = c.title.match(/—\s*(.+)$/);
+    if (m) procedureName = m[1].trim();
+  }
+  return tpl
+    .replace(/\{patient_name\}/g, c.patientName || "")
+    .replace(/\{procedure_name\}/g, procedureName);
+}
+
+// ── UrgencyBadge ─────────────────────────────────────────────────────────────
+function UrgencyBadge({ urgency }) {
+  const map = {
+    high:   ["🔴 Alta",  "#FDECEA", "#C0392B"],
+    medium: ["🟡 Média", "#FFF3E0", "#E67E22"],
+    low:    ["🟢 Baixa", "#E8F5E9", "#27AE60"],
+  };
+  const [label, bg, color] = map[urgency] || map.medium;
+  return (
+    <span style={{ fontSize: 11, background: bg, color, padding: "2px 8px", borderRadius: 12, fontWeight: 600, whiteSpace: "nowrap" }}>
+      {label}
+    </span>
+  );
+}
+
+// ── TypeBadge ─────────────────────────────────────────────────────────────────
+function TypeBadge({ type }) {
+  const map = { recurrence: "Recorrência", feedback: "Feedback", birthday: "Aniversário", custom: "Manual" };
+  const colorMap = { recurrence: T.blue, feedback: T.teal, birthday: "#F9A825", custom: T.grey };
+  return (
+    <span style={{ fontSize: 11, background: T.light, color: colorMap[type] || T.grey, padding: "2px 8px", borderRadius: 12, fontWeight: 500 }}>
+      {map[type] || type}
+    </span>
+  );
+}
+
+// ── CommitmentCard ────────────────────────────────────────────────────────────
+function CommitmentCard({ c, ctx, onEdit, onDelete, onDragStart, onDragOver, onDrop, isDragging, isDragOver }) {
+  const { appSettings, patients, setModal, setCommitments, db } = ctx;
+  const waMsg = fillCommitmentTemplate(appSettings, c);
+  const waHref = c.patientPhone ? waLink(c.patientPhone, waMsg) : null;
+
+  function openAddPhone() {
+    const patient = patients.find((p) => String(p.id) === String(c.patientId));
+    if (!patient) return;
+    setModal({
+      content: (
+        <PatientForm
+          ctx={ctx}
+          patient={patient}
+          onClose={() => {
+            setModal(null);
+            // Recarrega commitments para atualizar o telefone nos cards
+            db.fetchCommitments().then(setCommitments).catch(console.error);
+          }}
+        />
+      ),
+      onClose: () => setModal(null),
+    });
+  }
+
+  return (
+    <div
+      className={`commitment-card${isDragging ? " dragging" : ""}${isDragOver ? " drag-over" : ""}`}
+      draggable
+      onDragStart={onDragStart}
+      onDragOver={(e) => { e.preventDefault(); onDragOver?.(); }}
+      onDrop={(e) => { e.preventDefault(); onDrop?.(); }}
+    >
+      <div className="commitment-card-title">{c.title}</div>
+      {c.description && <div className="commitment-card-sub" style={{ color: T.teal }}>{c.description}</div>}
+      {c.patientName && <div className="commitment-card-sub">👤 {c.patientName}</div>}
+      {c.procedureName && <div className="commitment-card-sub">💉 {c.procedureName}</div>}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", margin: "6px 0" }}>
+        <UrgencyBadge urgency={c.urgency} />
+        <TypeBadge type={c.type} />
+        {c.dueDate && <span style={{ fontSize: 11, color: T.grey }}>📅 {fmtDate(c.dueDate)}</span>}
+      </div>
+      <div style={{ display: "flex", gap: 5, marginTop: 8, flexWrap: "wrap", alignItems: "center" }}>
+        {waHref
+          ? <a href={waHref} target="_blank" rel="noreferrer" className="btn btn-wa btn-sm">WA</a>
+          : c.patientId && !c.patientPhone && (
+            <button
+              className="btn btn-sm btn-secondary"
+              title="Paciente sem telefone — clique para cadastrar"
+              onClick={openAddPhone}
+              style={{ fontSize: 11 }}
+            >📱 Adicionar tel.</button>
+          )
+        }
+        <button className="btn btn-sm btn-secondary" onClick={() => onEdit(c)} title="Editar">✏️</button>
+        <button className="btn btn-sm btn-danger" onClick={() => onDelete(c.id)} title="Excluir">🗑</button>
+      </div>
+    </div>
+  );
+}
+
+// ── KanbanTab ─────────────────────────────────────────────────────────────────
+function KanbanTab({ ctx, onNew }) {
+  const { commitments, setCommitments, setModal, db } = ctx;
+  const [showHistory, setShowHistory] = useState(false);
+  const [dragId, setDragId] = useState(null);
+  const [dragFromStatus, setDragFromStatus] = useState(null);
+  const [dragOverId, setDragOverId] = useState(null);
+  const [dragOverCol, setDragOverCol] = useState(null);
+
+  const todayStr = today();
+  const sevenDaysAgo = addDays(todayStr, -7);
+
+  const COLUMNS = [
+    { id: "pending",     label: "Pendente" },
+    { id: "in_progress", label: "Em andamento" },
+    { id: "done",        label: "Concluído" },
+  ];
+
+  function getColCards(status) {
+    let cards = commitments.filter((c) => !c.isFuture && c.status === status);
+    if (status === "done" && !showHistory) {
+      cards = cards.filter((c) => (c.completedAt || c.createdAt) >= sevenDaysAgo + "T00:00:00");
+    }
+    return [...cards].sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id);
+  }
+
+  function openEdit(c) {
+    setModal({
+      content: <CommitmentForm ctx={ctx} commitment={c} onClose={() => setModal(null)} />,
+      onClose: () => setModal(null),
+    });
+  }
+
+  async function handleDelete(id) {
+    if (!window.confirm("Excluir este compromisso?")) return;
+    await db.deleteCommitment(id);
+    setCommitments((prev) => prev.filter((c) => c.id !== id));
+  }
+
+  async function handleColDrop(toStatus) {
+    if (!dragId || !dragFromStatus) return;
+    const card = commitments.find((c) => c.id === dragId);
+    if (!card) return;
+
+    if (dragFromStatus !== toStatus) {
+      // Cross-column: change status
+      try {
+        const updated = await db.updateCommitment({ ...card, status: toStatus });
+        setCommitments((prev) => prev.map((c) => c.id === updated.id ? updated : c));
+      } catch (e) { console.error(e); }
+    } else if (dragOverId && dragOverId !== dragId) {
+      // Same-column reorder
+      const colCards = getColCards(toStatus);
+      const fromIdx = colCards.findIndex((c) => c.id === dragId);
+      const toIdx   = colCards.findIndex((c) => c.id === dragOverId);
+      if (fromIdx < 0 || toIdx < 0) return;
+      const reordered = [...colCards];
+      const [moved] = reordered.splice(fromIdx, 1);
+      reordered.splice(toIdx, 0, moved);
+      const items = reordered.map((c, i) => ({ id: c.id, sortOrder: i * 10 }));
+      setCommitments((prev) => prev.map((c) => {
+        const found = items.find((x) => x.id === c.id);
+        return found ? { ...c, sortOrder: found.sortOrder } : c;
+      }));
+      db.updateCommitmentOrder(items).catch(console.error);
+    }
+    setDragId(null);
+    setDragFromStatus(null);
+    setDragOverId(null);
+    setDragOverCol(null);
+  }
+
+  return (
+    <div>
+      <div style={{ marginBottom: 16, display: "flex", justifyContent: "flex-end" }}>
+        <button className="btn btn-primary" onClick={onNew}>+ Novo Compromisso</button>
+      </div>
+      <div className="kanban-board">
+        {COLUMNS.map((col) => {
+          const cards = getColCards(col.id);
+          const totalDone = col.id === "done" ? commitments.filter((c) => !c.isFuture && c.status === "done").length : null;
+          return (
+            <div
+              key={col.id}
+              className={`kanban-col${dragOverCol === col.id && dragFromStatus !== col.id ? " drag-over" : ""}`}
+              onDragOver={(e) => { e.preventDefault(); setDragOverCol(col.id); }}
+              onDrop={(e) => { e.preventDefault(); handleColDrop(col.id); }}
+            >
+              <div className="kanban-col-header">
+                <span>{col.label}</span>
+                <span className="kanban-col-count">{cards.length}</span>
+              </div>
+              {cards.map((c) => (
+                <CommitmentCard
+                  key={c.id}
+                  c={c}
+                  ctx={ctx}
+                  onEdit={openEdit}
+                  onDelete={handleDelete}
+                  isDragging={dragId === c.id}
+                  isDragOver={dragOverId === c.id}
+                  onDragStart={() => { setDragId(c.id); setDragFromStatus(col.id); setDragOverId(null); }}
+                  onDragOver={() => setDragOverId(c.id)}
+                  onDrop={() => handleColDrop(col.id)}
+                />
+              ))}
+              {col.id === "done" && !showHistory && totalDone > cards.length && (
+                <button
+                  className="btn btn-ghost btn-sm"
+                  style={{ width: "100%", marginTop: 4 }}
+                  onClick={() => setShowHistory(true)}
+                >
+                  Ver histórico completo ({totalDone - cards.length} ocultos)
+                </button>
+              )}
+              {col.id === "done" && showHistory && totalDone > 0 && (
+                <button
+                  className="btn btn-ghost btn-sm"
+                  style={{ width: "100%", marginTop: 4 }}
+                  onClick={() => setShowHistory(false)}
+                >
+                  Mostrar apenas últimos 7 dias
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── FuturosTab ────────────────────────────────────────────────────────────────
+function FuturosTab({ ctx }) {
+  const { commitments, setCommitments, db } = ctx;
+  const futuros = [...commitments.filter((c) => c.isFuture)].sort((a, b) =>
+    (a.dueDate || "9999") < (b.dueDate || "9999") ? -1 : 1
+  );
+
+  async function handleDelete(id) {
+    if (!window.confirm("Excluir este compromisso futuro?")) return;
+    await db.deleteCommitment(id);
+    setCommitments((prev) => prev.filter((c) => c.id !== id));
+  }
+
+  if (futuros.length === 0) {
+    return <div style={{ color: T.grey, padding: "32px 0", textAlign: "center" }}>Nenhum compromisso futuro cadastrado.</div>;
+  }
+
+  return (
+    <div className="card">
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead>
+          <tr>
+            {["Título","Paciente","Procedimento","Vencimento","Tipo","Urgência",""].map((h) => (
+              <th key={h} style={{ textAlign: "left", padding: "8px 10px", fontSize: 11, color: T.grey, fontWeight: 600, borderBottom: `1px solid ${T.light}`, textTransform: "uppercase" }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {futuros.map((c) => (
+            <tr key={c.id} style={{ borderBottom: `1px solid ${T.light}` }}>
+              <td style={{ padding: "10px" }}>{c.title}</td>
+              <td style={{ padding: "10px", fontSize: 12 }}>{c.patientName || "—"}</td>
+              <td style={{ padding: "10px", fontSize: 12 }}>{c.procedureName || "—"}</td>
+              <td style={{ padding: "10px", fontSize: 12 }}>{c.dueDate ? fmtDate(c.dueDate) : "—"}</td>
+              <td style={{ padding: "10px" }}><TypeBadge type={c.type} /></td>
+              <td style={{ padding: "10px" }}><UrgencyBadge urgency={c.urgency} /></td>
+              <td style={{ padding: "10px" }}>
+                <button className="btn btn-sm btn-danger" onClick={() => handleDelete(c.id)}>🗑</button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── ConfigTab ─────────────────────────────────────────────────────────────────
+function ConfigTab({ ctx }) {
+  const { appSettings, setAppSettings, services, setServices, db } = ctx;
+  const [templates, setTemplates] = useState({ ...appSettings.commitmentTemplates });
+  const [saving, setSaving] = useState(false);
+  const [savedOk, setSavedOk] = useState(false);
+  const [returnDays, setReturnDays] = useState({});
+
+  // Init per-service returnDays
+  useState(() => {
+    const init = {};
+    services.forEach((s) => { init[s.id] = s.returnDays || 0; });
+    setReturnDays(init);
+  });
+
+  async function saveTemplates() {
+    setSaving(true);
+    try {
+      const updated = { ...appSettings, commitmentTemplates: templates };
+      await db.updateAppSettings(updated);
+      setAppSettings(updated);
+      setSavedOk(true);
+      setTimeout(() => setSavedOk(false), 2000);
+    } catch (e) { alert("Erro ao salvar: " + (e.message || "")); }
+    finally { setSaving(false); }
+  }
+
+  async function saveServiceReturn(svc) {
+    const days = Number(returnDays[svc.id] || 0);
+    try {
+      await db.updateService({ ...svc, returnDays: days });
+      setServices((prev) => prev.map((s) => s.id === svc.id ? { ...s, returnDays: days } : s));
+    } catch (e) { alert("Erro: " + (e.message || "")); }
+  }
+
+  const TEMPLATE_KEYS = [
+    { key: "recurrence", label: "Recorrência" },
+    { key: "feedback",   label: "Feedback" },
+    { key: "birthday",   label: "Aniversário" },
+  ];
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <div className="card">
+        <div className="section-title" style={{ marginBottom: 12 }}>Templates de Mensagem WhatsApp</div>
+        <div style={{ fontSize: 12, color: T.grey, marginBottom: 16 }}>
+          Variáveis disponíveis: <code>{"{patient_name}"}</code> e <code>{"{procedure_name}"}</code>
+        </div>
+        {TEMPLATE_KEYS.map(({ key, label }) => (
+          <div className="form-group" key={key}>
+            <label>{label}</label>
+            <textarea
+              className="form-control"
+              rows={3}
+              value={templates[key] || ""}
+              onChange={(e) => setTemplates((t) => ({ ...t, [key]: e.target.value }))}
+            />
+          </div>
+        ))}
+        <button className="btn btn-primary" onClick={saveTemplates} disabled={saving}>
+          {saving ? "Salvando…" : savedOk ? "✓ Salvo!" : "Salvar Templates"}
+        </button>
+      </div>
+
+      <div className="card">
+        <div className="section-title" style={{ marginBottom: 12 }}>Recorrência por Procedimento</div>
+        <div style={{ fontSize: 12, color: T.grey, marginBottom: 12 }}>
+          Dias de retorno padrão utilizados ao encerrar um atendimento.
+        </div>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr>
+              {["Procedimento", "Dias de Retorno", ""].map((h) => (
+                <th key={h} style={{ textAlign: "left", padding: "6px 10px", fontSize: 11, color: T.grey, fontWeight: 600, borderBottom: `1px solid ${T.light}`, textTransform: "uppercase" }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {services.filter((s) => s.active !== false).map((svc) => (
+              <tr key={svc.id} style={{ borderBottom: `1px solid ${T.light}` }}>
+                <td style={{ padding: "8px 10px" }}>{svc.name}</td>
+                <td style={{ padding: "8px 10px" }}>
+                  <input
+                    type="number"
+                    className="form-control"
+                    style={{ width: 90 }}
+                    value={returnDays[svc.id] ?? svc.returnDays ?? 0}
+                    onChange={(e) => setReturnDays((r) => ({ ...r, [svc.id]: e.target.value }))}
+                  />
+                </td>
+                <td style={{ padding: "8px 10px" }}>
+                  <button className="btn btn-sm btn-secondary" onClick={() => saveServiceReturn(svc)}>Salvar</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ── CommitmentsPage ───────────────────────────────────────────────────────────
+function CommitmentsPage({ ctx }) {
+  const { setModal, commitments, setCommitments, db } = ctx;
+  const [tab, setTab] = useState("kanban");
+
+  // Auto-promote futures on page visit
+  useEffect(() => {
+    const todayStr = today();
+    const toPromote = commitments.filter((c) => c.isFuture && c.dueDate && c.dueDate <= todayStr);
+    if (toPromote.length === 0) return;
+    (async () => {
+      const updated = await Promise.all(
+        toPromote.map((c) => db.updateCommitment({ ...c, isFuture: false, status: "pending" }))
+      );
+      setCommitments((prev) =>
+        prev.map((c) => { const u = updated.find((x) => x.id === c.id); return u || c; })
+      );
+    })();
+  }, []);
+
+  function openNew() {
+    setModal({
+      content: <CommitmentForm ctx={ctx} onClose={() => setModal(null)} />,
+      onClose: () => setModal(null),
+    });
+  }
+
+  const pendingCount = commitments.filter((c) => !c.isFuture && c.status === "pending").length;
+  const inProgressCount = commitments.filter((c) => !c.isFuture && c.status === "in_progress").length;
+  const futureCount = commitments.filter((c) => c.isFuture).length;
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: T.dark }}>✅ Compromissos</h2>
+          <div style={{ fontSize: 12, color: T.grey, marginTop: 2 }}>
+            {pendingCount} pendente(s) · {inProgressCount} em andamento · {futureCount} futuro(s)
+          </div>
+        </div>
+      </div>
+      <div className="tabs">
+        <button className={`tab ${tab === "kanban" ? "active" : ""}`} onClick={() => setTab("kanban")}>Kanban</button>
+        <button className={`tab ${tab === "futuros" ? "active" : ""}`} onClick={() => setTab("futuros")}>
+          Futuros {futureCount > 0 && `(${futureCount})`}
+        </button>
+        <button className={`tab ${tab === "config" ? "active" : ""}`} onClick={() => setTab("config")}>Configurações</button>
+      </div>
+      {tab === "kanban"  && <KanbanTab  ctx={ctx} onNew={openNew} />}
+      {tab === "futuros" && <FuturosTab ctx={ctx} />}
+      {tab === "config"  && <ConfigTab  ctx={ctx} />}
+    </div>
+  );
+}
+
+// ── CommitmentForm (create / edit modal) ──────────────────────────────────────
+function CommitmentForm({ ctx, commitment, onClose }) {
+  const { patients, services, commitments, setCommitments, db } = ctx;
+  const URGENCY_ORDER = { high: 0, medium: 100, low: 200 };
+
+  const [form, setForm] = useState(() => commitment ? {
+    title:       commitment.title,
+    description: commitment.description || "",
+    patientId:   String(commitment.patientId || ""),
+    procedureId: String(commitment.procedureId || ""),
+    urgency:     commitment.urgency || "medium",
+    dueDate:     commitment.dueDate || "",
+    isFuture:    commitment.isFuture || false,
+    type:        commitment.type || "custom",
+  } : {
+    title: "", description: "", patientId: "", procedureId: "",
+    urgency: "medium", dueDate: "", isFuture: false, type: "custom",
+  });
+  const [saving, setSaving] = useState(false);
+
+  function upd(f) { setForm((p) => ({ ...p, ...f })); }
+
+  async function save() {
+    if (!form.title.trim()) { alert("Informe um título."); return; }
+    setSaving(true);
+    try {
+      const payload = {
+        ...form,
+        patientId:   form.patientId   ? Number(form.patientId)   : null,
+        procedureId: form.procedureId ? Number(form.procedureId) : null,
+        sortOrder:   commitment?.sortOrder ?? URGENCY_ORDER[form.urgency] ?? 100,
+        status:      commitment?.status || "pending",
+      };
+      if (commitment) {
+        const updated = await db.updateCommitment({ ...commitment, ...payload });
+        setCommitments((prev) => prev.map((c) => c.id === commitment.id ? updated : c));
+      } else {
+        const created = await db.createCommitment(payload);
+        setCommitments((prev) => [created, ...prev]);
+      }
+      onClose();
+    } catch (e) { alert("Erro: " + (e.message || "tente novamente")); }
+    finally { setSaving(false); }
+  }
+
+  return (
+    <div>
+      <div className="modal-header">
+        <span className="modal-title">{commitment ? "Editar Compromisso" : "Novo Compromisso"}</span>
+        <button className="btn btn-ghost" onClick={onClose}>✕</button>
+      </div>
+      <div className="modal-body">
+        <div className="form-group">
+          <label>Título *</label>
+          <input className="form-control" value={form.title} onChange={(e) => upd({ title: e.target.value })} placeholder="Ex: Retorno Botox - Ana" />
+        </div>
+        <div className="form-group">
+          <label>Descrição</label>
+          <textarea className="form-control" rows={2} value={form.description} onChange={(e) => upd({ description: e.target.value })} />
+        </div>
+        <div className="form-row form-row-2">
+          <div className="form-group">
+            <label>Paciente</label>
+            <select className="form-control" value={form.patientId} onChange={(e) => upd({ patientId: e.target.value })}>
+              <option value="">— Nenhum —</option>
+              {sortByName(patients).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </div>
+          <div className="form-group">
+            <label>Procedimento</label>
+            <select className="form-control" value={form.procedureId} onChange={(e) => upd({ procedureId: e.target.value })}>
+              <option value="">— Nenhum —</option>
+              {sortByName(services.filter((s) => s.active !== false)).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          </div>
+        </div>
+        <div className="form-row form-row-2">
+          <div className="form-group">
+            <label>Urgência</label>
+            <select className="form-control" value={form.urgency} onChange={(e) => upd({ urgency: e.target.value })}>
+              <option value="high">🔴 Alta</option>
+              <option value="medium">🟡 Média</option>
+              <option value="low">🟢 Baixa</option>
+            </select>
+          </div>
+          <div className="form-group">
+            <label>Data de Vencimento</label>
+            <input type="date" className="form-control" value={form.dueDate} onChange={(e) => upd({ dueDate: e.target.value })} />
+          </div>
+        </div>
+        <div className="form-group">
+          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+            <input type="checkbox" checked={form.isFuture} onChange={(e) => upd({ isFuture: e.target.checked })} />
+            Compromisso futuro (não exibir no Kanban agora)
+          </label>
+        </div>
+      </div>
+      <div className="modal-footer">
+        <button className="btn btn-secondary" onClick={onClose}>Cancelar</button>
+        <button className="btn btn-primary" onClick={save} disabled={saving}>
+          {saving ? "Salvando…" : "Salvar"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── RecurrenceModal (shown after closing AttendanceForm) ──────────────────────
+function RecurrenceModal({ pr, ctx, onClose }) {
+  const { patient, procedures, attendanceDate } = pr || {};
+  const { commitments, setCommitments, db } = ctx;
+
+  const [rows, setRows] = useState(() =>
+    (procedures || [])
+      .filter((p) => p?.service)
+      .map((p) => ({
+        serviceId:   p.serviceId || p.service?.id,
+        serviceName: p.service?.name || p.serviceName || "",
+        enabled:     p.service?.needsReturn ?? false,
+        days:        p.service?.returnDays || 30,
+      }))
+  );
+  const [feedback, setFeedback] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  function updateRow(i, patch) {
+    setRows((prev) => prev.map((r, j) => j === i ? { ...r, ...patch } : r));
+  }
+
+  async function confirm() {
+    setSaving(true);
+    const created = [];
+    try {
+      for (const row of rows.filter((r) => r.enabled)) {
+        const dueDate = addDays(attendanceDate || today(), Number(row.days) || 30);
+        const c = await db.createCommitment({
+          title:       `Recorrência: ${row.serviceName}${patient?.name ? ` - ${patient.name}` : ""}`,
+          status:      "pending", urgency: "medium",
+          dueDate, type: "recurrence",
+          patientId:   patient?.id || null,
+          procedureId: row.serviceId,
+          isFuture:    true,
+          sortOrder:   100,
+        });
+        created.push(c);
+      }
+      if (feedback) {
+        const procedureNames = rows.map((r) => r.serviceName).filter(Boolean).join(", ") ||
+          (procedures || []).map((p) => p.serviceName || p.service?.name || "").filter(Boolean).join(", ");
+        const c = await db.createCommitment({
+          title:       `Feedback: ${patient?.name || "Paciente"}${procedureNames ? ` — ${procedureNames}` : ""}`,
+          description: procedureNames ? `Procedimentos: ${procedureNames}` : "",
+          status:      "pending", urgency: "medium",
+          dueDate:     addDays(today(), 1),
+          type:        "feedback",
+          patientId:   patient?.id || null,
+          isFuture:    false,
+          sortOrder:   100,
+        });
+        created.push(c);
+      }
+      if (created.length > 0) setCommitments((prev) => [...created, ...prev]);
+      onClose();
+    } catch (e) {
+      alert("Erro ao criar compromissos: " + (e.message || ""));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div>
+      <div className="modal-header">
+        <span className="modal-title">📋 Compromissos pós-atendimento</span>
+        <button className="btn btn-ghost" onClick={onClose}>✕</button>
+      </div>
+      <div className="modal-body">
+        <p style={{ fontSize: 13, color: T.grey, marginBottom: 16 }}>
+          Deseja criar lembretes de acompanhamento para <strong>{patient?.name || "este paciente"}</strong>?
+        </p>
+
+        {rows.length > 0 && (
+          <>
+            <div className="section-title" style={{ marginBottom: 10 }}>Lembretes de Recorrência</div>
+            {rows.map((row, i) => (
+              <div key={i} style={{ background: T.light, borderRadius: 10, padding: "10px 14px", marginBottom: 10 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: row.enabled ? 10 : 0 }}>
+                  <input type="checkbox" checked={row.enabled} onChange={(e) => updateRow(i, { enabled: e.target.checked })} id={`row-${i}`} />
+                  <label htmlFor={`row-${i}`} style={{ fontWeight: 500, fontSize: 13, cursor: "pointer" }}>{row.serviceName}</label>
+                </div>
+                {row.enabled && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 12, color: T.grey }}>Lembrar em</span>
+                    <input
+                      type="number"
+                      className="form-control"
+                      style={{ width: 80 }}
+                      value={row.days}
+                      onChange={(e) => updateRow(i, { days: e.target.value })}
+                    />
+                    <span style={{ fontSize: 12, color: T.grey }}>dias</span>
+                  </div>
+                )}
+              </div>
+            ))}
+            <hr style={{ border: "none", borderTop: `1px solid ${T.light}`, margin: "16px 0" }} />
+          </>
+        )}
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <input type="checkbox" id="feedback-cb" checked={feedback} onChange={(e) => setFeedback(e.target.checked)} />
+          <label htmlFor="feedback-cb" style={{ fontSize: 13, cursor: "pointer" }}>
+            Criar lembrete de feedback (para amanhã)
+          </label>
+        </div>
+      </div>
+      <div className="modal-footer">
+        <button className="btn btn-secondary" onClick={onClose}>Agora não</button>
+        <button className="btn btn-primary" onClick={confirm} disabled={saving}>
+          {saving ? "Criando…" : "Confirmar"}
+        </button>
       </div>
     </div>
   );

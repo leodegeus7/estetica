@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "estetica-dev",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeExecutable": "/opt/homebrew/Cellar/node/25.9.0_1/bin/node",
+      "runtimeArgs": ["node_modules/.bin/vite"],
       "port": 5173
     }
   ]
