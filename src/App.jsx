@@ -3892,7 +3892,7 @@ function CostsPage({ ctx }) {
                   <td>{c.frequency === "monthly" ? "Mensal" : c.frequency === "weekly" ? "Semanal" : "Único"}</td>
                   <td style={{ fontWeight: 600, color: T.danger }}>{fmt(c.amount)}</td>
                   <td>{fmtDate(c.date)}</td>
-                  <td><button className="btn btn-sm btn-danger" onClick={() => setCosts((prev) => prev.filter((x) => x.id !== c.id))}>Remover</button></td>
+                  <td><button className="btn btn-sm btn-danger" onClick={async () => { await db.deleteCost(c.id); setCosts((prev) => prev.filter((x) => x.id !== c.id)); }}>Remover</button></td>
                 </tr>
               ))}
             </tbody>
@@ -3906,10 +3906,19 @@ function CostsPage({ ctx }) {
 function CostForm({ ctx, onClose }) {
   const { setCosts } = ctx;
   const [form, setForm] = useState({ name: "", type: "fixed", amount: "", frequency: "monthly", date: today() });
-  function save() {
+  const [saving, setSaving] = useState(false);
+  async function save() {
     if (!form.name || !form.amount) return;
-    setCosts((prev) => [...prev, { id: Date.now(), ...form, amount: +form.amount }]);
-    onClose();
+    setSaving(true);
+    try {
+      const created = await db.createCost({ ...form, amount: +form.amount });
+      setCosts((prev) => [...prev, created]);
+      onClose();
+    } catch (e) {
+      console.error("Erro ao salvar custo:", e);
+    } finally {
+      setSaving(false);
+    }
   }
   return (
     <>
@@ -3925,7 +3934,7 @@ function CostForm({ ctx, onClose }) {
       </div>
       <div className="modal-footer">
         <button className="btn btn-secondary" onClick={onClose}>Cancelar</button>
-        <button className="btn btn-primary" onClick={save}>Salvar</button>
+        <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? "Salvando…" : "Salvar"}</button>
       </div>
     </>
   );
