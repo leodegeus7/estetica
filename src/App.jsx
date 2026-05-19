@@ -586,11 +586,14 @@ function MainApp({ user, onLogout }) {
     if (dataLoading || commitments.length === 0) return;
     const todayStr = today();
     const toPromote = commitments.filter((c) => c.isFuture && c.dueDate && c.dueDate <= todayStr);
-    if (toPromote.length === 0) return;
+    const toDemote = commitments.filter((c) => !c.isFuture && c.dueDate && c.dueDate > todayStr);
+    if (toPromote.length === 0 && toDemote.length === 0) return;
     (async () => {
-      const updated = await Promise.all(
-        toPromote.map((c) => db.updateCommitment({ ...c, isFuture: false, status: "pending" }))
-      );
+      const updates = [
+        ...toPromote.map((c) => db.updateCommitment({ ...c, isFuture: false, status: "pending" })),
+        ...toDemote.map((c) => db.updateCommitment({ ...c, isFuture: true })),
+      ];
+      const updated = await Promise.all(updates);
       setCommitments((prev) =>
         prev.map((c) => { const u = updated.find((x) => x.id === c.id); return u || c; })
       );
