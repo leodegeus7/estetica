@@ -59,7 +59,11 @@
       "Bash(PATH=\"/opt/homebrew/bin:$PATH\" npm run build)",
       "Bash(node -e \"require\\(''''fs''''\\).readFileSync\\(''''src/App.jsx'''',''''utf8''''\\)\")",
       "Bash(/opt/homebrew/Cellar/node/25.9.0_1/bin/node -e \":*)",
-      "Bash(/opt/homebrew/Cellar/node/25.9.0_1/bin/node node_modules/.bin/vite build)"
+      "Bash(/opt/homebrew/Cellar/node/25.9.0_1/bin/node node_modules/.bin/vite build)",
+      "Bash(git push *)",
+      "Bash(git remote *)",
+      "Bash(git add *)",
+      "Bash(git check-attr *)"
     ]
   }
 }
