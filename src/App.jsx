@@ -1352,6 +1352,7 @@ function AppointmentsPage({ ctx }) {
       ...nonDrafts.filter((a) => a.status !== "done" && a.status !== "cancelled")
     ],
     completed: nonDrafts.filter((a) => a.status === "done"),
+    cancelled: nonDrafts.filter((a) => a.status === "cancelled"),
   };
 
   function openNew() {
@@ -1415,7 +1416,7 @@ function AppointmentsPage({ ctx }) {
     <div>
       <div className="section-header">
         <div className="tabs">
-          {[["pending", "⏳ A Preencher"], ["completed", "✅ Preenchidos"]].map(([k, l]) => (
+          {[["pending", "⏳ A Preencher"], ["completed", "✅ Preenchidos"], ["cancelled", "❌ Cancelados"]].map(([k, l]) => (
             <button key={k} className={`tab ${tab === k ? "active" : ""}`} onClick={() => setTab(k)} style={{ color: k === "pending" && grouped[k].length > 0 ? T.warning : undefined }}>
               {l} ({grouped[k].length})
             </button>
