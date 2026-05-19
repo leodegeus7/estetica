@@ -1669,9 +1669,12 @@ function SalesPage({ ctx }) {
   const [tab, setTab] = useState("all");
   const [search, setSearch] = useState("");
 
-  const openSales = sales.filter((s) =>
-    (s.paymentMethod === "pixInstallment" && s.paidInstallments < s.installments)
-  );
+  const openSales = sales.filter((s) => {
+    if (s.paymentMethod !== "pixInstallment") return false;
+    const hasData = s.installmentsData && s.installmentsData.length > 0;
+    const totalPaid = hasData ? s.installmentsData.filter((x) => x.paid).length : s.paidInstallments;
+    return totalPaid < s.installments;
+  });
 
   const baseList = tab === "open" ? openSales : sales;
   const filtered = baseList.filter((s) => {
