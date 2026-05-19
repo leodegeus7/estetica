@@ -1377,6 +1377,10 @@ function AppointmentsPage({ ctx }) {
     setAppointments((prev) => prev.map((a) => a.id === id ? { ...a, status: "cancelled" } : a));
     db.cancelAppointment(id).catch(console.error);
   }
+  function restore(id) {
+    setAppointments((prev) => prev.map((a) => a.id === id ? { ...a, status: "scheduled" } : a));
+    db.updateAppointmentStatus(id, "scheduled").catch(console.error);
+  }
   async function deleteAppt(id) {
     const appt = appointments.find((a) => a.id === id);
     try {
@@ -1499,7 +1503,10 @@ function AppointmentsPage({ ctx }) {
                               <button className="btn btn-sm btn-ghost" onClick={() => setConfirmDeleteId(null)}>Não</button>
                             </div>
                           ) : (
-                            <button className="btn btn-sm btn-danger" onClick={() => setConfirmDeleteId(a.id)}>🗑 Apagar</button>
+                            <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                              <button className="btn btn-sm btn-success" onClick={() => restore(a.id)}>↩️ Restaurar</button>
+                              <button className="btn btn-sm btn-danger" onClick={() => setConfirmDeleteId(a.id)}>🗑 Apagar</button>
+                            </div>
                           )
                         )}
                       </div>
