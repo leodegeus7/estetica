@@ -825,8 +825,8 @@ function ReturnPromptModal({ pr, ctx, onClose }) {
       </div>
       <div className="modal-footer">
         <button className="btn btn-ghost" onClick={onClose}>Descartar</button>
-        <button className="btn btn-secondary" onClick={createCommitmentOnly}>📋 Lembrar depois</button>
-        <button className="btn btn-primary" onClick={scheduleNow}>📅 Agendar agora</button>
+        <button className="btn btn-secondary" onClick={scheduleNow}>📅 Agendar agora</button>
+        <button className="btn btn-primary" onClick={createCommitmentOnly}>📋 Lembrar depois</button>
       </div>
     </>
   );
