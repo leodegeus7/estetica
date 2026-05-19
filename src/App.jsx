@@ -1945,6 +1945,7 @@ function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillL
     netAmountEdited: !!editSale,
     downPaymentAmount: editSale?.downPaymentAmount || "",
     downPaymentMethod: editSale?.downPaymentMethod || "pix",
+    notes: editSale?.notes || "",
   });
 
   const [showEntry, setShowEntry] = useState(editing && (editSale.downPaymentAmount > 0));
@@ -2330,6 +2331,13 @@ function SaleForm({ ctx, appointmentId, prefillPatient, prefillService, prefillL
             <span style={{ fontWeight: 700 }}>Valor líquido recebido</span>
             <span style={{ fontWeight: 700, color: netValue >= 0 ? T.success : T.danger }}>{fmt(netValue)}</span>
           </div>
+        </div>
+
+        {/* Anotações */}
+        <div className="form-group">
+          <label>Anotações (opcional)</label>
+          <textarea className="form-control" rows={3} placeholder="Adicione observações sobre a venda..."
+            value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
         </div>
       </div>
       <div className="modal-footer">
