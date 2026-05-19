@@ -1732,7 +1732,8 @@ function SalesPage({ ctx }) {
           💳 <strong>{openSales.length} venda(s)</strong> com parcelas de Pix em aberto — total pendente: {fmt(openSales.reduce((s, x) => {
             const hasData = x.installmentsData && x.installmentsData.length > 0;
             const totalPaid = hasData ? x.installmentsData.filter((it) => it.paid).length : x.paidInstallments;
-            return s + (x.installments - totalPaid) * (x.price / x.installments);
+            const installmentValue = (x.price - (x.downPaymentAmount || 0)) / x.installments;
+            return s + (x.installments - totalPaid) * installmentValue;
           }, 0))}
         </div>
       )}
@@ -1753,6 +1754,7 @@ function SalesPage({ ctx }) {
                 const hasData = s.installmentsData && s.installmentsData.length > 0;
                 const totalPaid = hasData ? s.installmentsData.filter((x) => x.paid).length : s.paidInstallments;
                 const allPaid = totalPaid >= s.installments;
+                const installmentValue = (s.price - (s.downPaymentAmount || 0)) / s.installments;
                 const svcLabel = s.saleServices?.length > 0
                   ? s.saleServices.map((it) => `${it.serviceName}${it.qty > 1 ? ` ×${it.qty}` : ""}`).join(", ")
                   : (sv?.name || "—");
@@ -1768,7 +1770,7 @@ function SalesPage({ ctx }) {
                         >📋 Orç.</span>
                       )}
                     </td>
-                    <td><strong>{tab === "open" && isPix ? fmt((s.installments - totalPaid) * (s.price / s.installments)) : fmt(s.price)}</strong></td>
+                    <td><strong>{tab === "open" && isPix ? fmt((s.installments - totalPaid) * installmentValue) : fmt(s.price)}</strong></td>
                     <td>
                       <span className={`badge ${s.paymentMethod === "pix" ? "badge-info" : s.paymentMethod === "credit" ? "badge-ok" : "badge-warning"}`}>
                         {s.paymentMethod === "pix" ? "Pix" : s.paymentMethod === "credit" ? `Crédito ${s.installments}x` : `Pix ${totalPaid}/${s.installments}`}
