@@ -1316,7 +1316,7 @@ function apptStatusInfo(a) {
 
 function AppointmentsPage({ ctx }) {
   const { appointments, patients, services, attendances, setAppointments, setModal } = ctx;
-  const [tab, setTab] = useState("today");
+  const [tab, setTab] = useState("pending");
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const todayStr = today();
 
@@ -1324,10 +1324,11 @@ function AppointmentsPage({ ctx }) {
   const pendingFill = nonDrafts.filter((a) => a.status === "scheduled" && a.date < todayStr);
 
   const grouped = {
-    today: nonDrafts.filter((a) => a.date === todayStr || (a.status === "scheduled" && a.date < todayStr)),
-    upcoming: nonDrafts.filter((a) => a.date > todayStr),
-    past: nonDrafts.filter((a) => a.date < todayStr),
-    fill: pendingFill,
+    pending: [
+      ...pendingFill,
+      ...nonDrafts.filter((a) => a.status !== "done" && a.status !== "cancelled")
+    ],
+    completed: nonDrafts.filter((a) => a.status === "done"),
   };
 
   function openNew() {
@@ -1374,28 +1375,28 @@ function AppointmentsPage({ ctx }) {
     setModal({ lg: true, content: <AttendanceViewModal appointment={appt} attendance={att} ctx={ctx} onClose={() => setModal(null)} />, onClose: () => setModal(null) });
   }
 
-  // Na aba Hoje: agendamentos de hoje primeiro (por horário), depois pendentes de dias anteriores (por data desc)
+  // Na aba Pendentes: agendamentos de hoje primeiro (por horário), depois do mais antigo ao mais novo
   const list = (grouped[tab] || []).sort((a, b) => {
-    if (tab === "today") {
+    if (tab === "pending") {
       const aIsToday = a.date === todayStr;
       const bIsToday = b.date === todayStr;
       if (aIsToday && !bIsToday) return -1;
       if (!aIsToday && bIsToday) return 1;
-      if (!aIsToday && !bIsToday) return b.date.localeCompare(a.date); // mais recente primeiro
+      if (aIsToday && bIsToday) return a.time.localeCompare(b.time);
+      return a.date.localeCompare(b.date); // mais antigo primeiro
     }
-    return a.date.localeCompare(b.date) || a.time.localeCompare(b.time);
+    return b.date.localeCompare(a.date) || b.time.localeCompare(a.time); // mais recente primeiro para completados
   });
 
   return (
     <div>
       <div className="section-header">
         <div className="tabs">
-          {[["today", "Hoje"], ["upcoming", "Próximos"], ["past", "Anteriores"]].map(([k, l]) => (
-            <button key={k} className={`tab ${tab === k ? "active" : ""}`} onClick={() => setTab(k)}>{l} ({grouped[k].length})</button>
+          {[["pending", "⏳ A Preencher"], ["completed", "✅ Preenchidos"]].map(([k, l]) => (
+            <button key={k} className={`tab ${tab === k ? "active" : ""}`} onClick={() => setTab(k)} style={{ color: k === "pending" && grouped[k].length > 0 ? T.warning : undefined }}>
+              {l} ({grouped[k].length})
+            </button>
           ))}
-          <button className={`tab ${tab === "fill" ? "active" : ""}`} onClick={() => setTab("fill")} style={{ color: pendingFill.length > 0 ? T.warning : undefined }}>
-            ⏳ A Preencher {pendingFill.length > 0 && `(${pendingFill.length})`}
-          </button>
         </div>
         <button className="btn btn-primary" onClick={openNew}>+ Agendar</button>
       </div>
@@ -1410,10 +1411,10 @@ function AppointmentsPage({ ctx }) {
                 const p = patients.find((x) => String(x.id) === String(a.patientId));
                 const s = services.find((x) => String(x.id) === String(a.serviceId));
                 const statusInfo = apptStatusInfo(a);
-                const isPending = tab === "today" && a.date !== todayStr;
-                const prevIsPending = idx > 0 && tab === "today" && list[idx - 1].date !== todayStr;
-                const showSeparator = isPending && !prevIsPending;
-                const rowStyle = isDraft ? { background: "#fffbf0", cursor: "pointer" } : isPending ? { background: "#fffbf0" } : undefined;
+                const isOldPending = tab === "pending" && a.date !== todayStr;
+                const prevIsOldPending = idx > 0 && tab === "pending" && list[idx - 1].date !== todayStr;
+                const showSeparator = isOldPending && !prevIsOldPending;
+                const rowStyle = isDraft ? { background: "#fffbf0", cursor: "pointer" } : isOldPending ? { background: "#fffbf0" } : undefined;
                 return (
                   <>
                     {showSeparator && (
