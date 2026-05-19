@@ -1316,8 +1316,7 @@ function AppointmentsPage({ ctx }) {
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const todayStr = today();
 
-  const drafts = appointments.filter((a) => a.status === "draft");
-  const nonDrafts = appointments.filter((a) => a.status !== "draft" && a.status !== "gcal_dismissed");
+  const nonDrafts = appointments.filter((a) => a.status !== "gcal_dismissed");
   const pendingFill = nonDrafts.filter((a) => a.status === "scheduled" && a.date < todayStr);
 
   const grouped = {
@@ -1385,36 +1384,6 @@ function AppointmentsPage({ ctx }) {
 
   return (
     <div>
-      {drafts.length > 0 && (
-        <div className="card" style={{ marginBottom: 16, borderLeft: `4px solid ${T.warning}` }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-            <div className="section-title" style={{ margin: 0 }}>📅 Pré-agendamentos ({drafts.length})</div>
-          </div>
-          <div className="table-wrap">
-            <table>
-              <thead><tr><th>Data</th><th>Hora</th><th>Título</th><th>Local</th><th>Dur.</th><th>Ações</th></tr></thead>
-              <tbody>
-                {drafts.sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time)).map((a) => (
-                  <tr key={a.id} style={{ background: "#fffbf0" }}>
-                    <td>{fmtDate(a.date)}</td>
-                    <td><strong>{a.time}</strong></td>
-                    <td><span style={{ color: T.teal, fontStyle: "italic" }}>{a.draftTitle}</span></td>
-                    <td><span style={{ color: T.grey, fontSize: 12 }}>{a.location}</span></td>
-                    <td style={{ color: T.grey, fontSize: 12 }}>{a.duration || 60}min</td>
-                    <td>
-                      <div style={{ display: "flex", gap: 4 }}>
-                        <button className="btn btn-sm btn-primary" onClick={() => openComplete(a)}>✏️ Completar</button>
-                        <button className="btn btn-sm btn-danger" onClick={() => deleteAppt(a.id)}>🗑</button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
       <div className="section-header">
         <div className="tabs">
           {[["today", "Hoje"], ["upcoming", "Próximos"], ["past", "Anteriores"]].map(([k, l]) => (
@@ -1433,13 +1402,14 @@ function AppointmentsPage({ ctx }) {
             <tbody>
               {list.length === 0 && <tr><td colSpan={8}><div className="empty">Nenhum agendamento</div></td></tr>}
               {list.map((a, idx) => {
+                const isDraft = a.status === "draft";
                 const p = patients.find((x) => String(x.id) === String(a.patientId));
                 const s = services.find((x) => String(x.id) === String(a.serviceId));
                 const statusInfo = apptStatusInfo(a);
-                // Separador entre agendamentos de hoje e pendentes de dias anteriores (tab Hoje)
                 const isPending = tab === "today" && a.date !== todayStr;
                 const prevIsPending = idx > 0 && tab === "today" && list[idx - 1].date !== todayStr;
                 const showSeparator = isPending && !prevIsPending;
+                const rowStyle = isDraft ? { background: "#fffbf0", cursor: "pointer" } : isPending ? { background: "#fffbf0" } : undefined;
                 return (
                   <>
                     {showSeparator && (
@@ -1449,16 +1419,38 @@ function AppointmentsPage({ ctx }) {
                         </td>
                       </tr>
                     )}
-                  <tr key={a.id} style={isPending ? { background: "#fffbf0" } : undefined}>
+                  <tr key={a.id} style={rowStyle} onClick={isDraft ? () => openComplete(a) : undefined}>
                     <td>{fmtDate(a.date)}</td>
                     <td><strong>{a.time}</strong></td>
-                    <td>{p?.name}</td>
-                    <td><span className={`badge ${a.appointmentType === "avaliacao" ? "badge-warning" : "badge-scheduled"}`}>{a.appointmentType === "avaliacao" ? "Avaliação" : "Consulta"}</span></td>
-                    <td>{s?.name} {s?.needsReturn && <span className="return-badge">🔄 {s.returnType}</span>}</td>
-                    <td style={{ color: T.grey, fontSize: 12 }}>{a.duration || 60}min</td>
-                    <td><span className={`badge ${statusInfo.badgeClass}`}>{statusInfo.label}</span></td>
                     <td>
+                      {isDraft
+                        ? <span style={{ color: T.teal, fontStyle: "italic" }}>{a.draftTitle || "Importado do Google"} <span style={{ fontSize: 11, background: T.warning, color: "#fff", borderRadius: 4, padding: "1px 5px", fontStyle: "normal", marginLeft: 4 }}>Pendente</span></span>
+                        : p?.name}
+                    </td>
+                    <td>
+                      {isDraft
+                        ? <span style={{ color: T.grey, fontSize: 12 }}>—</span>
+                        : <span className={`badge ${a.appointmentType === "avaliacao" ? "badge-warning" : "badge-scheduled"}`}>{a.appointmentType === "avaliacao" ? "Avaliação" : "Consulta"}</span>}
+                    </td>
+                    <td>
+                      {isDraft
+                        ? <span style={{ color: T.grey, fontSize: 12 }}>{a.location}</span>
+                        : <>{s?.name} {s?.needsReturn && <span className="return-badge">🔄 {s.returnType}</span>}</>}
+                    </td>
+                    <td style={{ color: T.grey, fontSize: 12 }}>{a.duration || 60}min</td>
+                    <td>
+                      {isDraft
+                        ? <span className="badge badge-warning">Google</span>
+                        : <span className={`badge ${statusInfo.badgeClass}`}>{statusInfo.label}</span>}
+                    </td>
+                    <td onClick={(e) => e.stopPropagation()}>
                       <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
+                        {isDraft && (
+                          <>
+                            <button className="btn btn-sm btn-primary" onClick={() => openComplete(a)}>✏️ Completar</button>
+                            <button className="btn btn-sm btn-danger" onClick={() => deleteAppt(a.id)}>🗑</button>
+                          </>
+                        )}
                         {a.status === "scheduled" && (
                           <>
                             <button className="btn btn-sm btn-primary" onClick={() => openAttendance(a)}>⚡ Preencher</button>
@@ -1546,6 +1538,7 @@ function AppointmentForm({ ctx, onClose, prefill = {}, draftId }) {
           serviceId: form.serviceId,
           appointmentType: form.appointmentType,
           duration: form.duration,
+          note: form.note,
         });
         setAppointments((prev) => prev.map((a) => a.id === draftId
           ? { ...a, patientId: form.patientId, serviceId: form.serviceId, status: "scheduled", appointmentType: form.appointmentType, duration: form.duration }
@@ -1577,10 +1570,15 @@ function AppointmentForm({ ctx, onClose, prefill = {}, draftId }) {
   return (
     <>
       <div className="modal-header">
-        <div className="modal-title">{draftId ? `Completar: ${prefill.draftTitle || "Importado do Google"}` : prefill.serviceId ? "Agendar Retorno/Retoque" : "Novo Agendamento"}</div>
+        <div className="modal-title">{draftId ? "Completar Agendamento" : prefill.serviceId ? "Agendar Retorno/Retoque" : "Novo Agendamento"}</div>
         <button className="btn btn-ghost" onClick={onClose}>✕</button>
       </div>
       <div className="modal-body">
+        {draftId && (
+          <div style={{ background: "#fffbf0", border: `1px solid ${T.warning}`, borderRadius: 8, padding: "10px 14px", marginBottom: 16, fontSize: 13, color: T.warning, fontWeight: 500 }}>
+            📅 {prefill.draftTitle || "Importado do Google"} — {fmtDate(prefill.date)} às {prefill.time} — {prefill.location} ({prefill.duration || 60}min)
+          </div>
+        )}
         {!showNew ? (
           <div className="form-group">
             <label>Paciente</label>
@@ -1591,6 +1589,7 @@ function AppointmentForm({ ctx, onClose, prefill = {}, draftId }) {
                   value={form.patientId}
                   onChange={(v) => setForm({ ...form, patientId: v })}
                   placeholder="Buscar paciente…"
+                  autoFocus={!!draftId}
                 />
               </div>
               <button className="btn btn-secondary" style={{ whiteSpace: "nowrap" }} onClick={() => setShowNew(true)}>+ Novo</button>
@@ -1637,21 +1636,28 @@ function AppointmentForm({ ctx, onClose, prefill = {}, draftId }) {
             placeholder={form.appointmentType === "avaliacao" ? "Buscar procedimento… (opcional)" : "Buscar procedimento…"}
           />
         </div>
-        <div className="form-row form-row-2">
-          <div className="form-group"><label>Data</label><input type="date" className="form-control" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></div>
-          <div className="form-group"><label>Hora</label><input type="time" className="form-control" value={form.time} onChange={(e) => setForm({ ...form, time: e.target.value })} /></div>
-        </div>
+        {!draftId && (
+          <>
+            <div className="form-row form-row-2">
+              <div className="form-group"><label>Data</label><input type="date" className="form-control" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></div>
+              <div className="form-group"><label>Hora</label><input type="time" className="form-control" value={form.time} onChange={(e) => setForm({ ...form, time: e.target.value })} /></div>
+            </div>
+            <div className="form-group">
+              <label>Local</label>
+              <select className="form-control" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })}>
+                {(locations || []).map((l) => <option key={l.id} value={l.name}>{l.name}</option>)}
+              </select>
+            </div>
+          </>
+        )}
         <div className="form-group">
-          <label>Local</label>
-          <select className="form-control" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })}>
-            {(locations || []).map((l) => <option key={l.id} value={l.name}>{l.name}</option>)}
-          </select>
+          <label>Observação</label>
+          <textarea className="form-control" rows={2} value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder="Observações sobre o atendimento…" />
         </div>
-        {form.note && <div className="form-group"><label>Observação</label><textarea className="form-control" rows={2} value={form.note} readOnly style={{ background: T.light }} /></div>}
       </div>
       <div className="modal-footer">
         <button className="btn btn-secondary" onClick={onClose}>Cancelar</button>
-        <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? "Agendando…" : "Agendar"}</button>
+        <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? "Agendando…" : draftId ? "Confirmar" : "Agendar"}</button>
       </div>
     </>
   );
@@ -1753,7 +1759,7 @@ function SalesPage({ ctx }) {
                         >📋 Orç.</span>
                       )}
                     </td>
-                    <td><strong>{fmt(s.price)}</strong></td>
+                    <td><strong>{tab === "open" && isPix ? fmt((s.installments - s.paidInstallments) * (s.price / s.installments)) : fmt(s.price)}</strong></td>
                     <td>
                       <span className={`badge ${s.paymentMethod === "pix" ? "badge-info" : s.paymentMethod === "credit" ? "badge-ok" : "badge-warning"}`}>
                         {s.paymentMethod === "pix" ? "Pix" : s.paymentMethod === "credit" ? `Crédito ${s.installments}x` : `Pix ${s.paidInstallments}/${s.installments}`}

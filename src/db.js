@@ -255,13 +255,14 @@ export async function dismissGoogleDraft(id) {
   if (error) throw error;
 }
 
-export async function completeDraftAppointment(id, { patientId, serviceId, appointmentType, duration }) {
+export async function completeDraftAppointment(id, { patientId, serviceId, appointmentType, duration, note }) {
   const { error } = await supabase.from("appointments").update({
     patient_id: patientId,
     service_id: serviceId || null,
     status: "scheduled",
     appointment_type: appointmentType || "consulta",
     duration: duration || 60,
+    note: note || "",
   }).eq("id", id);
   if (error) throw error;
 }
