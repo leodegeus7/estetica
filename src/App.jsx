@@ -774,8 +774,28 @@ function MainApp({ user, onLogout }) {
 
 // ─── RETURN PROMPT ─────────────────────────────────────────────────────────────
 function ReturnPromptModal({ pr, ctx, onClose }) {
-  const { setModal, setPage } = ctx;
+  const { setModal, setPage, db, commitments, setCommitments } = ctx;
   const suggestedDate = addDays(pr.appointment.date, pr.service.returnDays);
+
+  async function createCommitmentOnly() {
+    try {
+      const c = await db.createCommitment({
+        title:       `Recorrência: ${pr.service.name} - ${pr.patient?.name}`,
+        status:      "pending",
+        urgency:     "medium",
+        dueDate:     suggestedDate,
+        type:        "recurrence",
+        patientId:   pr.appointment.patientId,
+        procedureId: pr.appointment.serviceId,
+        isFuture:    true,
+        sortOrder:   100,
+      });
+      setCommitments((prev) => [c, ...prev]);
+      onClose();
+    } catch (e) {
+      alert("Erro ao criar compromisso: " + (e.message || ""));
+    }
+  }
 
   function scheduleNow() {
     onClose();
@@ -804,8 +824,8 @@ function ReturnPromptModal({ pr, ctx, onClose }) {
         <p style={{ fontSize: 14, marginTop: 8 }}>Data sugerida: <strong>{fmtDate(suggestedDate)}</strong></p>
       </div>
       <div className="modal-footer">
-        <button className="btn btn-ghost" onClick={onClose}>Não agendar</button>
-        <button className="btn btn-secondary" onClick={onClose}>Agendar depois</button>
+        <button className="btn btn-ghost" onClick={onClose}>Descartar</button>
+        <button className="btn btn-secondary" onClick={createCommitmentOnly}>📋 Lembrar depois</button>
         <button className="btn btn-primary" onClick={scheduleNow}>📅 Agendar agora</button>
       </div>
     </>
