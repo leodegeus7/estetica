@@ -488,6 +488,7 @@ function MainApp({ user, onLogout }) {
   const [dataLoading, setDataLoading] = useState(true);
   const [gcalMappings, setGcalMappings] = useState(() => loadMappings());
   const [gcalSyncing, setGcalSyncing] = useState(false);
+  const gcalSyncingRef = useRef(false); // ref para guard síncrono (useState é async)
   const [gcalLastSync, setGcalLastSync] = useState(null);
 
   useEffect(() => {
@@ -533,19 +534,27 @@ function MainApp({ user, onLogout }) {
   }, []);
 
   async function triggerSync() {
-    if (gcalSyncing) return;
+    if (gcalSyncingRef.current) return; // guard síncrono — evita chamadas paralelas
     const validMappings = gcalMappings.filter((m) => m.calendarId && m.location);
     if (validMappings.length === 0) return;
     const apiKey = import.meta.env.VITE_GOOGLE_API_KEY;
     if (!apiKey) return;
+    gcalSyncingRef.current = true;
     setGcalSyncing(true);
     try {
       const newDrafts = await syncGoogleCalendars(validMappings);
-      if (newDrafts.length > 0) setAppointments((prev) => [...prev, ...newDrafts]);
+      if (newDrafts.length > 0) {
+        setAppointments((prev) => {
+          const existingIds = new Set(prev.map((a) => a.id));
+          const reais = newDrafts.filter((d) => !existingIds.has(d.id));
+          return reais.length > 0 ? [...prev, ...reais] : prev;
+        });
+      }
       setGcalLastSync(new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }));
     } catch (err) {
       throw err;
     } finally {
+      gcalSyncingRef.current = false;
       setGcalSyncing(false);
     }
   }
