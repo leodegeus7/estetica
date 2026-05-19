@@ -3962,8 +3962,8 @@ function MonthlyChart({ sales, costs, attendances = [] }) {
       </div>
 
       {/* Chart area */}
-      <div style={{ position: "relative", height: chartH + 70, overflowX: "auto" }}>
-        <div style={{ position: "relative", height: chartH, marginTop: 20, display: "flex", alignItems: "flex-end", gap: 0, borderBottom: `2px solid ${T.light}`, minWidth: 400 }}>
+      <div style={{ position: "relative", height: chartH + 70, overflowX: "auto", overflowY: "visible" }}>
+        <div style={{ position: "relative", height: chartH, marginTop: 20, display: "flex", alignItems: "flex-end", gap: 0, borderBottom: `2px solid ${T.light}`, minWidth: 400, overflow: "visible" }}>
           {/* Horizontal grid lines */}
           {[0.25, 0.5, 0.75, 1].map((f) => (
             <div key={f} style={{ position: "absolute", left: 0, right: 0, bottom: chartH * f, borderTop: `1px dashed ${T.light}`, pointerEvents: "none" }}>
@@ -4004,17 +4004,10 @@ function MonthlyChart({ sales, costs, attendances = [] }) {
                 </>
               )}
 
-              {/* Tooltip — positioned above short bars, inside chart for tall bars */}
+              {/* Tooltip — always positioned above bars */}
               {hovered === i && (() => {
-                const maxBarH = Math.max(
-                  visibleLines.revenue ? pct(m.revenue) : 0,
-                  visibleLines.opCosts ? pct(m.opCosts) : 0,
-                  visibleLines.netProfit ? pct(Math.abs(m.netProfit)) : 0,
-                  visibleLines.avgTicket ? pct(m.avgTicket || 0) : 0,
-                );
-                const tooltipInside = maxBarH > chartH * 0.6;
                 return (
-                  <div style={{ position: "absolute", ...(tooltipInside ? { top: 4, bottom: "auto" } : { bottom: "calc(100% + 6px)", top: "auto" }), left: "50%", transform: "translateX(-50%)", background: T.dark, color: "white", borderRadius: 8, padding: "8px 12px", fontSize: 12, whiteSpace: "nowrap", zIndex: 10, lineHeight: 1.7, boxShadow: "0 4px 12px rgba(0,0,0,0.2)" }}>
+                  <div style={{ position: "absolute", bottom: "calc(100% + 6px)", top: "auto", left: "50%", transform: "translateX(-50%)", background: T.dark, color: "white", borderRadius: 8, padding: "8px 12px", fontSize: 12, whiteSpace: "nowrap", zIndex: 10, lineHeight: 1.7, boxShadow: "0 4px 12px rgba(0,0,0,0.2)" }}>
                     <div style={{ fontWeight: 700, marginBottom: 4 }}>{m.label.toUpperCase()}</div>
                     {visibleLines.revenue && <div>💰 Faturamento: <strong>{fmt(m.revenue)}</strong></div>}
                     {visibleLines.netProfit && <div style={{ color: m.netProfit >= 0 ? "#6FCF97" : "#EB5757" }}>✅ Lucro: <strong>{fmt(m.netProfit)}</strong></div>}
