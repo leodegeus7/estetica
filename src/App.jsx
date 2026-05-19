@@ -1357,8 +1357,9 @@ function AppointmentsPage({ ctx }) {
 
   const grouped = {
     pending: [
-      ...pendingFill,
-      ...nonDrafts.filter((a) => a.status !== "done" && a.status !== "cancelled")
+      ...pendingFill,                                                                               // passados aguardando preenchimento (primeiro)
+      ...nonDrafts.filter((a) => a.status === "draft"),                                            // drafts do Google
+      ...nonDrafts.filter((a) => a.status === "scheduled" && a.date >= todayStr),                 // futuros agendados
     ],
     completed: nonDrafts.filter((a) => a.status === "done"),
     cancelled: nonDrafts.filter((a) => a.status === "cancelled"),
