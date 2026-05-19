@@ -1226,12 +1226,16 @@ function DashboardPage({ ctx }) {
             <div className="section-header"><div className="section-title">📅 Agenda de Hoje</div></div>
             {todayAppt.length === 0 && <div className="empty">Nenhum agendamento hoje</div>}
             {todayAppt.map((a) => {
+              const isDraft = a.status === "draft";
               const p = patients.find((x) => String(x.id) === String(a.patientId));
               const s = services.find((x) => String(x.id) === String(a.serviceId));
               const statusInfo = apptStatusInfo(a);
               return (
                 <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${T.light}` }}>
-                  <div><div style={{ fontWeight: 500, fontSize: 14 }}>{p?.name}</div><div style={{ fontSize: 12, color: T.grey }}>{s?.name}</div></div>
+                  <div>
+                    <div style={{ fontWeight: 500, fontSize: 14 }}>{isDraft ? (a.draftTitle || "Importado do Google") : p?.name}</div>
+                    <div style={{ fontSize: 12, color: T.grey }}>{isDraft ? a.location : s?.name}</div>
+                  </div>
                   <div style={{ textAlign: "right" }}>
                     <div style={{ fontWeight: 600 }}>{a.time}</div>
                     <span className={`badge ${statusInfo.badgeClass}`}>{statusInfo.label}</span>
