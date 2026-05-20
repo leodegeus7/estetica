@@ -4029,82 +4029,77 @@ function MonthlyChart({ sales, costs, attendances = [], selectedMonth, onMonthSe
         </div>
       </div>
 
-      {/* Chart area — wrapper separado para não cortar tooltip com overflowX */}
+      {/* Painel de hover — FORA do container com overflow, nunca cortado */}
+      <div style={{ minHeight: 44, marginBottom: 4 }}>
+        {hovered !== null && display[hovered] && (() => {
+          const m = display[hovered];
+          return (
+            <div style={{ display: "inline-flex", gap: 16, background: T.dark, color: "white", borderRadius: 8, padding: "7px 14px", fontSize: 12, whiteSpace: "nowrap", lineHeight: 1.7, boxShadow: "0 4px 12px rgba(0,0,0,0.2)", flexWrap: "wrap" }}>
+              <span style={{ fontWeight: 700, textTransform: "capitalize" }}>{m.label}</span>
+              {visibleLines.revenue && <span>💰 <strong>{fmt(m.revenue)}</strong></span>}
+              {visibleLines.netProfit && <span style={{ color: m.netProfit >= 0 ? "#6FCF97" : "#EB5757" }}>✅ <strong>{fmt(m.netProfit)}</strong></span>}
+              {visibleLines.opCosts && <span style={{ color: "#EB8057" }}>📦 <strong>{fmt(m.opCosts)}</strong></span>}
+              {visibleLines.clients && <span style={{ color: "#F2C94C" }}>👤 <strong>{m.clients}</strong></span>}
+              {visibleLines.avgTicket && <span style={{ color: "#f59e0b" }}>🎯 <strong>{fmt(m.avgTicket)}</strong></span>}
+            </div>
+          );
+        })()}
+      </div>
+
+      {/* Chart area — overflowX para scroll horizontal em telas pequenas */}
       <div style={{ overflowX: "auto" }}>
-      <div style={{ position: "relative", height: chartH + 130, minWidth: 400 }}>
-        <div style={{ position: "relative", height: chartH, marginTop: 80, display: "flex", alignItems: "flex-end", gap: 0, borderBottom: `2px solid ${T.light}`, overflow: "visible" }}>
-          {/* Horizontal grid lines */}
-          {[0.25, 0.5, 0.75, 1].map((f) => (
-            <div key={f} style={{ position: "absolute", left: 0, right: 0, bottom: chartH * f, borderTop: `1px dashed ${T.light}`, pointerEvents: "none" }}>
-              <span style={{ position: "absolute", right: 0, top: -9, fontSize: 9, color: T.grey }}>{fmt(maxVal * f)}</span>
-            </div>
-          ))}
-
-          {display.map((m, i) => {
-            const isSelected = selectedMonth && m.key === selectedMonth;
-            return (
-            <div key={m.key} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", position: "relative", height: "100%", cursor: onMonthSelect ? "pointer" : undefined }}
-              onMouseEnter={() => setHovered(i)} onMouseLeave={() => setHovered(null)}
-              onClick={() => onMonthSelect && onMonthSelect(m.key)}>
-
-              {/* Hover/selected highlight */}
-              {(hovered === i || isSelected) && (
-                <div style={{ position: "absolute", inset: 0, background: isSelected ? "rgba(79,140,151,0.12)" : "rgba(79,140,151,0.06)", borderRadius: 4, border: isSelected ? `2px solid ${T.teal}` : "none", pointerEvents: "none" }} />
-              )}
-
-              {/* Bars for revenue + opCosts */}
-              <div style={{ display: "flex", gap: 2, alignItems: "flex-end", height: "100%", paddingBottom: 0 }}>
-                {visibleLines.revenue && (
-                  <div style={{ width: 12, background: T.blue, borderRadius: "3px 3px 0 0", height: pct(m.revenue), opacity: 0.85, transition: "height 0.3s" }} title={`Faturamento: ${fmt(m.revenue)}`} />
-                )}
-                {visibleLines.opCosts && (
-                  <div style={{ width: 12, background: T.danger, borderRadius: "3px 3px 0 0", height: pct(m.opCosts), opacity: 0.75, transition: "height 0.3s" }} title={`Despesas: ${fmt(m.opCosts)}`} />
-                )}
-                {visibleLines.netProfit && (
-                  <div style={{ width: 12, background: m.netProfit >= 0 ? T.success : T.danger, borderRadius: "3px 3px 0 0", height: pct(Math.abs(m.netProfit)), opacity: m.netProfit >= 0 ? 0.9 : 0.4, transition: "height 0.3s", border: m.netProfit < 0 ? `2px dashed ${T.danger}` : "none" }} title={`Lucro: ${fmt(m.netProfit)}`} />
-                )}
-                {visibleLines.avgTicket && (
-                  <div style={{ width: 12, background: "#f59e0b", borderRadius: "3px 3px 0 0", height: pct(m.avgTicket || 0), opacity: 0.8, transition: "height 0.3s" }} title={`Ticket Médio: ${fmt(m.avgTicket)}`} />
-                )}
+        <div style={{ position: "relative", height: chartH + 30, minWidth: 400 }}>
+          <div style={{ position: "relative", height: chartH, display: "flex", alignItems: "flex-end", gap: 0, borderBottom: `2px solid ${T.light}` }}>
+            {/* Horizontal grid lines */}
+            {[0.25, 0.5, 0.75, 1].map((f) => (
+              <div key={f} style={{ position: "absolute", left: 0, right: 0, bottom: chartH * f, borderTop: `1px dashed ${T.light}`, pointerEvents: "none" }}>
+                <span style={{ position: "absolute", right: 0, top: -9, fontSize: 9, color: T.grey }}>{fmt(maxVal * f)}</span>
               </div>
+            ))}
 
-              {/* Clients dot + label */}
-              {visibleLines.clients && m.clients > 0 && (
-                <>
-                  <div style={{ position: "absolute", bottom: pctC(m.clients) - 4, left: "50%", transform: "translateX(-50%)", width: 8, height: 8, borderRadius: "50%", background: T.warning, border: `2px solid white`, zIndex: 2 }} title={`Clientes: ${m.clients}`} />
-                  <div style={{ position: "absolute", bottom: pctC(m.clients) + 8, left: "50%", transform: "translateX(-50%)", fontSize: 9, color: T.warning, fontWeight: 700, whiteSpace: "nowrap", zIndex: 2 }}>{m.clients}</div>
-                </>
-              )}
+            {display.map((m, i) => {
+              const isSelected = selectedMonth && m.key === selectedMonth;
+              return (
+                <div key={m.key} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", position: "relative", height: "100%", cursor: onMonthSelect ? "pointer" : undefined }}
+                  onMouseEnter={() => setHovered(i)} onMouseLeave={() => setHovered(null)}
+                  onClick={() => onMonthSelect && onMonthSelect(m.key)}>
 
-              {/* Tooltip — always positioned above bars */}
-              {hovered === i && (() => {
-                return (
-                  <div style={{ position: "absolute", bottom: "calc(100% + 6px)", top: "auto", left: "50%", transform: "translateX(-50%)", background: T.dark, color: "white", borderRadius: 8, padding: "8px 12px", fontSize: 12, whiteSpace: "nowrap", zIndex: 10, lineHeight: 1.7, boxShadow: "0 4px 12px rgba(0,0,0,0.2)" }}>
-                    <div style={{ fontWeight: 700, marginBottom: 4 }}>{m.label.toUpperCase()}</div>
-                    {visibleLines.revenue && <div>💰 Faturamento: <strong>{fmt(m.revenue)}</strong></div>}
-                    {visibleLines.netProfit && <div style={{ color: m.netProfit >= 0 ? "#6FCF97" : "#EB5757" }}>✅ Lucro: <strong>{fmt(m.netProfit)}</strong></div>}
-                    {visibleLines.opCosts && <div style={{ color: "#EB8057" }}>📦 Despesas: <strong>{fmt(m.opCosts)}</strong></div>}
-                    {visibleLines.clients && <div style={{ color: "#F2C94C" }}>👤 Clientes: <strong>{m.clients}</strong></div>}
-                    {visibleLines.avgTicket && <div style={{ color: "#f59e0b" }}>🎯 Ticket Médio: <strong>{fmt(m.avgTicket)}</strong></div>}
+                  {/* Hover/selected highlight */}
+                  {(hovered === i || isSelected) && (
+                    <div style={{ position: "absolute", inset: 0, background: isSelected ? "rgba(79,140,151,0.12)" : "rgba(79,140,151,0.06)", borderRadius: 4, border: isSelected ? `2px solid ${T.teal}` : "none", pointerEvents: "none" }} />
+                  )}
+
+                  {/* Bars */}
+                  <div style={{ display: "flex", gap: 2, alignItems: "flex-end", height: "100%" }}>
+                    {visibleLines.revenue && <div style={{ width: 12, background: T.blue, borderRadius: "3px 3px 0 0", height: pct(m.revenue), opacity: 0.85, transition: "height 0.3s" }} />}
+                    {visibleLines.opCosts && <div style={{ width: 12, background: T.danger, borderRadius: "3px 3px 0 0", height: pct(m.opCosts), opacity: 0.75, transition: "height 0.3s" }} />}
+                    {visibleLines.netProfit && <div style={{ width: 12, background: m.netProfit >= 0 ? T.success : T.danger, borderRadius: "3px 3px 0 0", height: pct(Math.abs(m.netProfit)), opacity: m.netProfit >= 0 ? 0.9 : 0.4, transition: "height 0.3s", border: m.netProfit < 0 ? `2px dashed ${T.danger}` : "none" }} />}
+                    {visibleLines.avgTicket && <div style={{ width: 12, background: "#f59e0b", borderRadius: "3px 3px 0 0", height: pct(m.avgTicket || 0), opacity: 0.8, transition: "height 0.3s" }} />}
                   </div>
-                );
-              })()}
-            </div>
-            );
-          })}
-        </div>
 
-        {/* X axis labels */}
-        <div style={{ display: "flex", marginTop: 6 }}>
-          {display.map((m) => {
-            const isSelected = selectedMonth && m.key === selectedMonth;
-            return (
-              <div key={m.key} style={{ flex: 1, textAlign: "center", fontSize: 11, color: isSelected ? T.teal : T.grey, fontWeight: isSelected ? 700 : 400, textTransform: "capitalize" }}>{m.label}</div>
-            );
-          })}
+                  {/* Clients dot + label */}
+                  {visibleLines.clients && m.clients > 0 && (
+                    <>
+                      <div style={{ position: "absolute", bottom: pctC(m.clients) - 4, left: "50%", transform: "translateX(-50%)", width: 8, height: 8, borderRadius: "50%", background: T.warning, border: `2px solid white`, zIndex: 2 }} />
+                      <div style={{ position: "absolute", bottom: pctC(m.clients) + 8, left: "50%", transform: "translateX(-50%)", fontSize: 9, color: T.warning, fontWeight: 700, whiteSpace: "nowrap", zIndex: 2 }}>{m.clients}</div>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* X axis labels */}
+          <div style={{ display: "flex", marginTop: 6 }}>
+            {display.map((m) => {
+              const isSelected = selectedMonth && m.key === selectedMonth;
+              return (
+                <div key={m.key} style={{ flex: 1, textAlign: "center", fontSize: 11, color: isSelected ? T.teal : T.grey, fontWeight: isSelected ? 700 : 400, textTransform: "capitalize" }}>{m.label}</div>
+              );
+            })}
+          </div>
         </div>
       </div>
-      </div>{/* fim overflowX wrapper */}
 
       {/* Averages row */}
       {(() => {
