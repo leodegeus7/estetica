@@ -3952,7 +3952,7 @@ function CostForm({ ctx, onClose }) {
 
 
 // ─── MONTHLY CHART ────────────────────────────────────────────────────────────
-function MonthlyChart({ sales, costs, attendances = [] }) {
+function MonthlyChart({ sales, costs, attendances = [], selectedMonth, onMonthSelect }) {
   const now = new Date();
   const defaultFrom = new Date(now.getFullYear(), now.getMonth() - 5, 1).toISOString().slice(0, 7);
   const defaultTo = now.toISOString().slice(0, 7);
@@ -4029,9 +4029,10 @@ function MonthlyChart({ sales, costs, attendances = [] }) {
         </div>
       </div>
 
-      {/* Chart area */}
-      <div style={{ position: "relative", height: chartH + 70, overflowX: "auto", overflowY: "visible" }}>
-        <div style={{ position: "relative", height: chartH, marginTop: 20, display: "flex", alignItems: "flex-end", gap: 0, borderBottom: `2px solid ${T.light}`, minWidth: 400, overflow: "visible" }}>
+      {/* Chart area — wrapper separado para não cortar tooltip com overflowX */}
+      <div style={{ overflowX: "auto" }}>
+      <div style={{ position: "relative", height: chartH + 130, minWidth: 400 }}>
+        <div style={{ position: "relative", height: chartH, marginTop: 80, display: "flex", alignItems: "flex-end", gap: 0, borderBottom: `2px solid ${T.light}`, overflow: "visible" }}>
           {/* Horizontal grid lines */}
           {[0.25, 0.5, 0.75, 1].map((f) => (
             <div key={f} style={{ position: "absolute", left: 0, right: 0, bottom: chartH * f, borderTop: `1px dashed ${T.light}`, pointerEvents: "none" }}>
@@ -4039,13 +4040,16 @@ function MonthlyChart({ sales, costs, attendances = [] }) {
             </div>
           ))}
 
-          {display.map((m, i) => (
-            <div key={m.key} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", position: "relative", height: "100%" }}
-              onMouseEnter={() => setHovered(i)} onMouseLeave={() => setHovered(null)}>
+          {display.map((m, i) => {
+            const isSelected = selectedMonth && m.key === selectedMonth;
+            return (
+            <div key={m.key} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", position: "relative", height: "100%", cursor: onMonthSelect ? "pointer" : undefined }}
+              onMouseEnter={() => setHovered(i)} onMouseLeave={() => setHovered(null)}
+              onClick={() => onMonthSelect && onMonthSelect(m.key)}>
 
-              {/* Hover highlight */}
-              {hovered === i && (
-                <div style={{ position: "absolute", inset: 0, background: "rgba(79,140,151,0.06)", borderRadius: 4, pointerEvents: "none" }} />
+              {/* Hover/selected highlight */}
+              {(hovered === i || isSelected) && (
+                <div style={{ position: "absolute", inset: 0, background: isSelected ? "rgba(79,140,151,0.12)" : "rgba(79,140,151,0.06)", borderRadius: 4, border: isSelected ? `2px solid ${T.teal}` : "none", pointerEvents: "none" }} />
               )}
 
               {/* Bars for revenue + opCosts */}
@@ -4086,16 +4090,21 @@ function MonthlyChart({ sales, costs, attendances = [] }) {
                 );
               })()}
             </div>
-          ))}
+            );
+          })}
         </div>
 
         {/* X axis labels */}
-        <div style={{ display: "flex", marginTop: 6, minWidth: 400 }}>
-          {display.map((m) => (
-            <div key={m.key} style={{ flex: 1, textAlign: "center", fontSize: 11, color: T.grey, textTransform: "capitalize" }}>{m.label}</div>
-          ))}
+        <div style={{ display: "flex", marginTop: 6 }}>
+          {display.map((m) => {
+            const isSelected = selectedMonth && m.key === selectedMonth;
+            return (
+              <div key={m.key} style={{ flex: 1, textAlign: "center", fontSize: 11, color: isSelected ? T.teal : T.grey, fontWeight: isSelected ? 700 : 400, textTransform: "capitalize" }}>{m.label}</div>
+            );
+          })}
         </div>
       </div>
+      </div>{/* fim overflowX wrapper */}
 
       {/* Averages row */}
       {(() => {
@@ -4174,20 +4183,29 @@ function FinancePage({ ctx }) {
   const topProducts = Object.entries(prodConsumption).sort((a, b) => b[1] - a[1]).slice(0, 5)
     .map(([id, qty]) => { const p = products.find((x) => String(x.id) === id); return { name: p?.name || "—", qty, unit: p?.unit || "" }; });
 
+  const monthLabel = new Date(month + "-15").toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
+
   return (
     <div>
-      <div style={{ display: "flex", gap: 12, marginBottom: 20, alignItems: "center" }}>
-        <label style={{ fontSize: 13, color: T.grey, fontWeight: 500 }}>Mês (detalhes):</label>
-        <input type="month" className="form-control" style={{ width: 200 }} value={month} onChange={(e) => setMonth(e.target.value)} />
+      {/* Seletor de mês + painel de métricas — sempre visível no topo */}
+      <div className="card" style={{ marginBottom: 20, padding: "16px 20px" }}>
+        <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16 }}>
+          <span style={{ fontSize: 14, fontWeight: 600, color: T.dark }}>📅 Detalhes do mês:</span>
+          <input type="month" className="form-control" style={{ width: 200 }} value={month} onChange={(e) => setMonth(e.target.value)} />
+          <span style={{ fontSize: 13, color: T.grey, textTransform: "capitalize" }}>{monthLabel}</span>
+        </div>
+        <div className="grid-4" style={{ margin: 0 }}>
+          <MetricCard icon="💰" title="Faturamento" value={fmt(totalRevenue)} sub={`${mSales.length} vendas`} />
+          <MetricCard icon="📦" title="Custo Produtos" value={fmt(totalProductCost)} sub="produtos usados em atendimentos" color={T.danger} />
+          <MetricCard icon="✅" title="Lucro Bruto" value={fmt(grossProfit)} sub="após produtos e taxas" color={grossProfit >= 0 ? T.success : T.danger} />
+          <MetricCard icon="🏆" title="Lucro Líquido" value={fmt(netProfit)} sub="após operacional" color={netProfit >= 0 ? T.success : T.danger} />
+          <MetricCard icon="🎯" title="Ticket Médio" value={fmt(avgTicket)} sub={`${mSales.length} atendimentos no mês`} color="#f59e0b" />
+        </div>
       </div>
-      <MonthlyChart sales={sales} costs={costs} attendances={attendances || []} />
-      <div className="grid-4">
-        <MetricCard icon="💰" title="Faturamento" value={fmt(totalRevenue)} sub={`${mSales.length} vendas`} />
-        <MetricCard icon="📦" title="Custo Produtos" value={fmt(totalProductCost)} sub="produtos usados em atendimentos" color={T.danger} />
-        <MetricCard icon="✅" title="Lucro Bruto" value={fmt(grossProfit)} sub="após produtos e taxas" color={grossProfit >= 0 ? T.success : T.danger} />
-        <MetricCard icon="🏆" title="Lucro Líquido" value={fmt(netProfit)} sub="após operacional" color={netProfit >= 0 ? T.success : T.danger} />
-        <MetricCard icon="🎯" title="Ticket Médio" value={fmt(avgTicket)} sub={`${mSales.length} atendimentos no mês`} color="#f59e0b" />
-      </div>
+
+      {/* Gráfico histórico — clique numa barra para trocar o mês */}
+      <MonthlyChart sales={sales} costs={costs} attendances={attendances || []} selectedMonth={month} onMonthSelect={setMonth} />
+
       <div className="grid-2">
         <div className="card">
           <div className="section-title" style={{ marginBottom: 16 }}>📊 DRE Simplificado</div>
