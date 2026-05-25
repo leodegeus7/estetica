@@ -4260,7 +4260,11 @@ function FinancePage({ ctx }) {
           {mCosts.length === 0 && <div className="empty">Nenhum custo neste mês</div>}
           {mCosts.map((c) => (
             <div key={c.id} className="stat-row">
-              <span className="stat-label">{c.name} <span className={`badge ${c.type === "fixed" ? "badge-info" : "badge-warning"}`} style={{ marginLeft: 4 }}>{c.type === "fixed" ? "Fixo" : "Var."}</span></span>
+              <span className="stat-label">
+                {c.name}
+                <span className={`badge ${c.type === "fixed" ? "badge-info" : "badge-warning"}`} style={{ marginLeft: 4 }}>{c.type === "fixed" ? "Fixo" : "Var."}</span>
+                {c.category && <span style={{ display: "block", fontSize: 11, color: T.grey, fontWeight: 400, marginTop: 1 }}>{c.category}</span>}
+              </span>
               <span className="stat-value" style={{ color: T.danger }}>{fmt(c.amount)}</span>
             </div>
           ))}
