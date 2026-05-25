@@ -469,6 +469,7 @@ function MainApp({ user, onLogout }) {
   const [sales, setSales] = useState([]);
   const [costs, setCosts] = useState([]);
   const [profCosts, setProfCosts] = useState([]);
+  const [costsMonth, setCostsMonth] = useState(today().slice(0, 7));
   const [appointments, setAppointments] = useState([]);
   const [quotations, setQuotations] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
@@ -577,7 +578,7 @@ function MainApp({ user, onLogout }) {
   const ctx = {
     user: userForCtx, products, setProducts, stockEntries, setStockEntries,
     services, setServices, patients, setPatients, sales, setSales,
-    costs, setCosts, profCosts, appointments, setAppointments, modal, setModal,
+    costs, setCosts, profCosts, costsMonth, setCostsMonth, appointments, setAppointments, modal, setModal,
     pendingReturn, setPendingReturn, setPage, locations, setLocations,
     quotations, setQuotations,
     suppliers, setSuppliers,
@@ -3873,12 +3874,11 @@ function ServiceForm({ ctx, service, onClose }) {
 
 // ─── COSTS ────────────────────────────────────────────────────────────────────
 function CostsPage({ ctx }) {
-  const { costs, setCosts, profCosts, setModal } = ctx;
+  const { costs, setCosts, profCosts, costsMonth, setCostsMonth, setModal } = ctx;
   const [tab, setTab] = useState("all");
-  const [monthFilter, setMonthFilter] = useState("");
 
   const allCosts = [...costs, ...profCosts];
-  const byMonth = monthFilter ? allCosts.filter((c) => c.date.startsWith(monthFilter)) : allCosts;
+  const byMonth = costsMonth ? allCosts.filter((c) => c.date.startsWith(costsMonth)) : allCosts;
   const filtered = tab === "all" ? byMonth : byMonth.filter((c) => c.type === tab);
   const total = filtered.reduce((s, c) => s + c.amount, 0);
 
@@ -3891,8 +3891,8 @@ function CostsPage({ ctx }) {
           ))}
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <input type="month" className="form-control" style={{ width: 160 }} value={monthFilter} onChange={(e) => setMonthFilter(e.target.value)} />
-          {monthFilter && <button className="btn btn-ghost btn-sm" onClick={() => setMonthFilter("")}>✕</button>}
+          <input type="month" className="form-control" style={{ width: 160 }} value={costsMonth} onChange={(e) => setCostsMonth(e.target.value)} />
+          {costsMonth && <button className="btn btn-ghost btn-sm" onClick={() => setCostsMonth("")}>✕</button>}
           <button className="btn btn-primary" onClick={() => setModal({ content: <CostForm ctx={ctx} onClose={() => setModal(null)} />, onClose: () => setModal(null) })}>+ Novo Custo</button>
         </div>
       </div>
@@ -4143,7 +4143,7 @@ function MonthlyChart({ sales, costs, attendances = [], selectedMonth, onMonthSe
 
 // ─── FINANCE ──────────────────────────────────────────────────────────────────
 function FinancePage({ ctx }) {
-  const { sales, costs, profCosts, services, products, attendances } = ctx;
+  const { sales, costs, profCosts, services, products, attendances, setPage, setCostsMonth } = ctx;
   const [month, setMonth] = useState(today().slice(0, 7));
 
   const mSales = sales.filter((s) => s.date.startsWith(month));
@@ -4223,7 +4223,7 @@ function FinancePage({ ctx }) {
           <div className="stat-row"><span className="stat-label">(-) Custo de produtos usados</span><span className="stat-value" style={{ color: T.danger }}>-{fmt(totalProductCost)}</span></div>
           <div className="stat-row"><span className="stat-label">(-) Taxas financeiras</span><span className="stat-value" style={{ color: T.danger }}>-{fmt(totalFees)}</span></div>
           <div className="stat-row"><span style={{ fontWeight: 700 }}>= Lucro Bruto</span><span className="stat-value" style={{ fontWeight: 700, color: grossProfit >= 0 ? T.success : T.danger }}>{fmt(grossProfit)}</span></div>
-          <div className="stat-row"><span className="stat-label">(-) Custos operacionais</span><span className="stat-value" style={{ color: T.danger }}>-{fmt(totalCosts)}</span></div>
+          <div className="stat-row" style={{ cursor: "pointer" }} onClick={() => { setCostsMonth(month); setPage("costs"); }}><span className="stat-label" style={{ textDecoration: "underline dotted" }}>(-) Custos operacionais</span><span className="stat-value" style={{ color: T.danger }}>-{fmt(totalCosts)}</span></div>
           <div className="stat-row" style={{ paddingTop: 12, borderTop: `2px solid ${T.dark}` }}>
             <span style={{ fontWeight: 700 }}>= Lucro Líquido</span>
             <span style={{ fontWeight: 700, fontSize: 18, color: netProfit >= 0 ? T.success : T.danger }}>{fmt(netProfit)}</span>
