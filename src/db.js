@@ -212,6 +212,7 @@ export async function fetchProfessionalCosts() {
       .eq("user_id", "murilo")
       .eq("context", "professional")
       .eq("direction", "expense")
+      .neq("description", "Aplicação RDB")
       .order("date", { ascending: false }),
     financeSupabase
       .from("categories")
@@ -222,9 +223,7 @@ export async function fetchProfessionalCosts() {
 
   const catMap = Object.fromEntries((catRes.data ?? []).map((c) => [c.id, c.name]));
 
-  return (txRes.data ?? [])
-    .filter((tx) => !/aplica[çc][aã]o\s+rdb/i.test(tx.description))
-    .map((tx) => ({
+  return (txRes.data ?? []).map((tx) => ({
     id:        "fin-" + tx.id,
     name:      tx.description,
     type:      "fixed",
