@@ -1,4 +1,4 @@
-import { supabase } from "./supabase";
+import { supabase, financeSupabase } from "./supabase";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 const snake = (o) => ({
@@ -196,6 +196,42 @@ export async function createCost(c) {
 export async function deleteCost(id) {
   const { error } = await supabase.from("costs").delete().eq("id", id);
   if (error) throw error;
+}
+
+/**
+ * Busca todas as transações profissionais do Murilo no Finance Manager
+ * e as retorna no mesmo formato de costs, para espelhamento na clínica.
+ */
+export async function fetchProfessionalCosts() {
+  if (!financeSupabase) return [];
+
+  const [txRes, catRes] = await Promise.all([
+    financeSupabase
+      .from("transactions")
+      .select("id, date, description, amount, category_id, competency_month")
+      .eq("user_id", "murilo")
+      .eq("context", "professional")
+      .eq("direction", "expense")
+      .order("date", { ascending: false }),
+    financeSupabase
+      .from("categories")
+      .select("id, name"),
+  ]);
+
+  if (txRes.error) throw txRes.error;
+
+  const catMap = Object.fromEntries((catRes.data ?? []).map((c) => [c.id, c.name]));
+
+  return (txRes.data ?? []).map((tx) => ({
+    id:        "fin-" + tx.id,
+    name:      tx.description,
+    type:      "fixed",
+    amount:    Number(tx.amount),
+    frequency: "once",
+    date:      tx.date,
+    category:  catMap[tx.category_id] ?? null,
+    source:    "finance",
+  }));
 }
 
 // ── appointments ──────────────────────────────────────────────────────────────

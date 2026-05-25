@@ -468,6 +468,7 @@ function MainApp({ user, onLogout }) {
   const [patients, setPatients] = useState([]);
   const [sales, setSales] = useState([]);
   const [costs, setCosts] = useState([]);
+  const [profCosts, setProfCosts] = useState([]);
   const [appointments, setAppointments] = useState([]);
   const [quotations, setQuotations] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
@@ -508,7 +509,8 @@ function MainApp({ user, onLogout }) {
       db.fetchManualExits().catch(() => []),
       db.fetchCommitments().catch(() => []),
       db.fetchAppSettings().catch(() => null),
-    ]).then(([locs, prods, stock, svcs, pats, sls, cts, appts, quots, supps, atts, tsks, mexits, comms, settings]) => {
+      db.fetchProfessionalCosts().catch(() => []),
+    ]).then(([locs, prods, stock, svcs, pats, sls, cts, appts, quots, supps, atts, tsks, mexits, comms, settings, pCosts]) => {
       setLocations(locs.length > 0 ? locs : INIT_LOCATIONS);
       setProducts(prods);
       setStockEntries(stock);
@@ -516,6 +518,7 @@ function MainApp({ user, onLogout }) {
       setPatients(pats);
       setSales(sls);
       setCosts(cts);
+      setProfCosts(pCosts);
       setAppointments(appts);
       setQuotations(quots);
       setSuppliers(supps || []);
@@ -574,7 +577,7 @@ function MainApp({ user, onLogout }) {
   const ctx = {
     user: userForCtx, products, setProducts, stockEntries, setStockEntries,
     services, setServices, patients, setPatients, sales, setSales,
-    costs, setCosts, appointments, setAppointments, modal, setModal,
+    costs, setCosts, profCosts, appointments, setAppointments, modal, setModal,
     pendingReturn, setPendingReturn, setPage, locations, setLocations,
     quotations, setQuotations,
     suppliers, setSuppliers,
@@ -3870,9 +3873,13 @@ function ServiceForm({ ctx, service, onClose }) {
 
 // ─── COSTS ────────────────────────────────────────────────────────────────────
 function CostsPage({ ctx }) {
-  const { costs, setCosts, setModal } = ctx;
+  const { costs, setCosts, profCosts, setModal } = ctx;
   const [tab, setTab] = useState("all");
-  const filtered = tab === "all" ? costs : costs.filter((c) => c.type === tab);
+  const [monthFilter, setMonthFilter] = useState("");
+
+  const allCosts = [...costs, ...profCosts];
+  const byMonth = monthFilter ? allCosts.filter((c) => c.date.startsWith(monthFilter)) : allCosts;
+  const filtered = tab === "all" ? byMonth : byMonth.filter((c) => c.type === tab);
   const total = filtered.reduce((s, c) => s + c.amount, 0);
 
   return (
@@ -3883,26 +3890,34 @@ function CostsPage({ ctx }) {
             <button key={k} className={`tab ${tab === k ? "active" : ""}`} onClick={() => setTab(k)}>{l}</button>
           ))}
         </div>
-        <button className="btn btn-primary" onClick={() => setModal({ content: <CostForm ctx={ctx} onClose={() => setModal(null)} />, onClose: () => setModal(null) })}>+ Novo Custo</button>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <input type="month" className="form-control" style={{ width: 160 }} value={monthFilter} onChange={(e) => setMonthFilter(e.target.value)} />
+          {monthFilter && <button className="btn btn-ghost btn-sm" onClick={() => setMonthFilter("")}>✕</button>}
+          <button className="btn btn-primary" onClick={() => setModal({ content: <CostForm ctx={ctx} onClose={() => setModal(null)} />, onClose: () => setModal(null) })}>+ Novo Custo</button>
+        </div>
       </div>
       <div style={{ marginBottom: 20 }} />
       <div className="grid-2" style={{ marginBottom: 20 }}>
-        <MetricCard icon="📊" title="Total Filtrado" value={fmt(total)} sub="" />
-        <MetricCard icon="🧾" title="Total Geral" value={fmt(costs.reduce((s, c) => s + c.amount, 0))} sub="" />
+        <MetricCard icon="📊" title="Total Filtrado" value={fmt(total)} sub={`${filtered.length} custos`} />
+        <MetricCard icon="🧾" title="Total Geral" value={fmt(allCosts.reduce((s, c) => s + c.amount, 0))} sub="" />
       </div>
       <div className="card">
         <div className="table-wrap">
           <table>
-            <thead><tr><th>Descrição</th><th>Tipo</th><th>Frequência</th><th>Valor</th><th>Data</th><th></th></tr></thead>
+            <thead><tr><th>Descrição</th><th>Categoria</th><th>Tipo</th><th>Frequência</th><th>Valor</th><th>Data</th><th></th></tr></thead>
             <tbody>
               {filtered.map((c) => (
                 <tr key={c.id}>
-                  <td><strong>{c.name}</strong></td>
+                  <td>
+                    <strong>{c.name}</strong>
+                    {c.source === "finance" && <span className="badge badge-grey" style={{ marginLeft: 6, fontSize: 10 }}>Financeiro</span>}
+                  </td>
+                  <td style={{ color: T.grey, fontSize: 13 }}>{c.category || "—"}</td>
                   <td><span className={`badge ${c.type === "fixed" ? "badge-info" : "badge-warning"}`}>{c.type === "fixed" ? "Fixo" : "Variável"}</span></td>
                   <td>{c.frequency === "monthly" ? "Mensal" : c.frequency === "weekly" ? "Semanal" : "Único"}</td>
                   <td style={{ fontWeight: 600, color: T.danger }}>{fmt(c.amount)}</td>
                   <td>{fmtDate(c.date)}</td>
-                  <td><button className="btn btn-sm btn-danger" onClick={async () => { await db.deleteCost(c.id); setCosts((prev) => prev.filter((x) => x.id !== c.id)); }}>Remover</button></td>
+                  <td>{c.source !== "finance" && <button className="btn btn-sm btn-danger" onClick={async () => { await db.deleteCost(c.id); setCosts((prev) => prev.filter((x) => x.id !== c.id)); }}>Remover</button>}</td>
                 </tr>
               ))}
             </tbody>
@@ -4128,11 +4143,11 @@ function MonthlyChart({ sales, costs, attendances = [], selectedMonth, onMonthSe
 
 // ─── FINANCE ──────────────────────────────────────────────────────────────────
 function FinancePage({ ctx }) {
-  const { sales, costs, services, products, attendances } = ctx;
+  const { sales, costs, profCosts, services, products, attendances } = ctx;
   const [month, setMonth] = useState(today().slice(0, 7));
 
   const mSales = sales.filter((s) => s.date.startsWith(month));
-  const mCosts = costs.filter((c) => c.date.startsWith(month));
+  const mCosts = [...costs, ...profCosts].filter((c) => c.date.startsWith(month));
   const mAttendances = (attendances || []).filter((a) => a.date?.startsWith(month));
 
   const totalRevenue = mSales.reduce((s, x) => s + x.price, 0);
@@ -4199,7 +4214,7 @@ function FinancePage({ ctx }) {
       </div>
 
       {/* Gráfico histórico — clique numa barra para trocar o mês */}
-      <MonthlyChart sales={sales} costs={costs} attendances={attendances || []} selectedMonth={month} onMonthSelect={setMonth} />
+      <MonthlyChart sales={sales} costs={[...costs, ...profCosts]} attendances={attendances || []} selectedMonth={month} onMonthSelect={setMonth} />
 
       <div className="grid-2">
         <div className="card">

@@ -8,3 +8,10 @@ if (!supabaseUrl || !supabaseKey) {
 }
 
 export const supabase = createClient(supabaseUrl, supabaseKey)
+
+// Cliente secundário: Finance Manager (transações profissionais do Murilo)
+const financeUrl = import.meta.env.VITE_FINANCE_SUPABASE_URL
+const financeKey = import.meta.env.VITE_FINANCE_SUPABASE_KEY
+export const financeSupabase = financeUrl && financeKey
+  ? createClient(financeUrl, financeKey)
+  : null
