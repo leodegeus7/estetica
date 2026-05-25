@@ -222,7 +222,9 @@ export async function fetchProfessionalCosts() {
 
   const catMap = Object.fromEntries((catRes.data ?? []).map((c) => [c.id, c.name]));
 
-  return (txRes.data ?? []).map((tx) => ({
+  return (txRes.data ?? [])
+    .filter((tx) => !/aplica[çc][aã]o\s+rdb/i.test(tx.description))
+    .map((tx) => ({
     id:        "fin-" + tx.id,
     name:      tx.description,
     type:      "fixed",
