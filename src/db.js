@@ -213,6 +213,7 @@ export async function fetchProfessionalCosts() {
       .eq("context", "professional")
       .eq("direction", "expense")
       .neq("description", "Aplicação RDB")
+      .neq("category_id", "cat-clin-produtos")
       .order("date", { ascending: false }),
     financeSupabase
       .from("categories")
